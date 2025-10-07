@@ -319,7 +319,7 @@ func Run() {
 			MaxIdleConns:        1,
 			MaxIdleConnsPerHost: 1,
 			MaxConnsPerHost:     1,
-			IdleConnTimeout:     1 * time.Second,
+			IdleConnTimeout:     60 * time.Second,
 		}
 		client := &http.Client{Transport: tr, Timeout: 1 * time.Second}
 		workers[i] = NewWorker(args.Url, ch, reportCh, client)
