@@ -14,7 +14,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Version of rwg",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("0.0.2")
+		fmt.Println("0.0.3")
 	},
 }
 

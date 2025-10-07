@@ -129,7 +129,7 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
         raise ValueError(f"Found {error_count} errors in the data; see above for details.")
 
     # SLO checks among successes
-    slo_ms = slo / 1000.0
+    slo_ms = slo
     slo_violations_count = int((success_df['latency_ms'] > float(slo_ms)).sum())
     goodput_count = int((success_df['latency_ms'] <= float(slo_ms)).sum())
 
@@ -287,7 +287,7 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
                 mask = (window_df['timestamp'] >= start_ts) & (window_df['timestamp'] < end_ts)
 
             chunk = window_df[mask]
-            total_requests = len(chunk)
+            total_requests = len(chunk) / interval_seconds
 
             # compute dropped and errors
             dropped_count = int((chunk.get('status_code') == dropped_code).sum()) if 'status_code' in chunk.columns else 0
