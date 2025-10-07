@@ -351,7 +351,7 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
                 'errors': errors,
                 'p50_latency': p50,
                 'p95_latency': p95,
-                'total_requests': total_requests,
+                'total_requests': total_rate,
             }
             writer.writerow(row)
 
