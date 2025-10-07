@@ -11,12 +11,14 @@ import (
 
 // flags for parseCmd
 var parseFlags struct {
-	rwgOutput     string
-	overallOutput string
-	warmup        int
-	cooldown      int
-	version       int
-	slo           int
+	rwgOutput      string
+	overallOutput  string
+	warmup         int
+	cooldown       int
+	version        int
+	slo            int
+	realtimeOutput string
+	freq           int
 }
 
 // parseCmd represents the parse command
@@ -37,9 +39,11 @@ func init() {
 	parseCmd.Flags().IntVar(&parseFlags.cooldown, "cooldown", 0, "Cooldown seconds to trim from end")
 	parseCmd.Flags().IntVar(&parseFlags.version, "version", 0, "HTTP version (1 or 2) (required)")
 	parseCmd.Flags().IntVar(&parseFlags.slo, "slo", 0, "SLO in milliseconds (required)")
+	parseCmd.Flags().StringVar(&parseFlags.realtimeOutput, "realtime_output", "", "Path to write realtime report (JSON)")
+	parseCmd.Flags().IntVar(&parseFlags.freq, "freq", 0, "Frequency in milliseconds for realtime report")
 
 	_ = parseCmd.MarkFlagRequired("rwg_output")
-	_ = parseCmd.MarkFlagRequired("overall_output")
+	//_ = parseCmd.MarkFlagRequired("overall_output")
 	_ = parseCmd.MarkFlagRequired("version")
 	_ = parseCmd.MarkFlagRequired("slo")
 }
@@ -61,6 +65,8 @@ func Parse() {
 		"--cooldown", fmt.Sprintf("%d", parseFlags.cooldown),
 		"--version", fmt.Sprintf("%d", parseFlags.version),
 		"--slo", fmt.Sprintf("%d", parseFlags.slo),
+		"--realtime_output", parseFlags.realtimeOutput,
+		"--freq", fmt.Sprintf("%d", parseFlags.freq),
 	}
 
 	cmd := exec.Command(python, args...)

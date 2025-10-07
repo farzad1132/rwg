@@ -177,6 +177,164 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
 
     return out_row
 
+def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int = 0, cooldown: int = 0):
+    """
+    Generate a CSV file containing time-series statistics at the specified frequency.
+
+    The following columns are produced:
+    - timestamp: start of the interval (RFC3339 format)
+    - relative_time: seconds since start of the entire dataset
+    - goodput: rate (requests/sec) of successful requests with latency <= SLO
+    - slo_violations: rate (requests/sec) of successful requests with latency > SLO
+    - dropped_requests: rate (requests/sec) of requests with dropped status code
+    - errors: rate (requests/sec) of requests that resulted in an error
+    - p50_latency: 50th percentile latency in milliseconds (successful requests)
+    - p90_latency: 90th percentile latency in milliseconds (successful requests)
+    - total_requests: number of requests in the interval
+
+    Notes / assumptions:
+    - The DataFrame must contain columns: 'latency', 'status_code', 'error', 'timestamp', 'url'.
+    - 'latency' is expected in microseconds (as produced by the runner) and is
+      converted to milliseconds for percentiles and SLO checks.
+    - Uses module-level globals `version` and `slo`.
+    - freq is in milliseconds.
+    """
+
+    # Validate inputs
+    if df is None or len(df) == 0:
+        raise ValueError("DataFrame is empty")
+
+    global slo, version
+    if 'timestamp' not in df.columns:
+        raise ValueError("DataFrame must contain a 'timestamp' column with RFC3339 timestamps")
+
+    # parse timestamps and sort
+    df = df.copy()
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    df = df.dropna(subset=['timestamp'])
+    df = df.sort_values('timestamp')
+
+    start = df['timestamp'].iloc[0]
+    end = df['timestamp'].iloc[-1]
+    full_duration_seconds = (end - start).total_seconds()
+    if full_duration_seconds <= 0:
+        raise ValueError('Invalid timestamp range in DataFrame')
+
+    # Apply warmup/cooldown trimming
+    filtered_start = start + pd.Timedelta(seconds=warmup)
+    filtered_end = end - pd.Timedelta(seconds=cooldown)
+    if filtered_start >= filtered_end:
+        raise ValueError("Warmup and cooldown periods remove the entire data range")
+
+    window_df = df[(df['timestamp'] >= filtered_start) & (df['timestamp'] <= filtered_end)]
+
+    # Convert latency to milliseconds
+    if 'latency' not in window_df.columns:
+        raise ValueError("DataFrame must contain a 'latency' column")
+    window_df['latency_ms'] = window_df['latency'].astype(float) / 1000.0
+
+    # error flag
+    window_df['is_error'] = False
+    if 'error' in window_df.columns:
+        window_df['is_error'] = window_df['error'].astype(str).str.len() > 0
+
+    # success and dropped codes
+    dropped_code = status_dict['dropped'][version]
+    success_code = status_dict['success'][version]
+
+    # prepare bins
+    interval_ms = int(freq)
+    interval_td = pd.Timedelta(milliseconds=interval_ms)
+    intervals = []
+    t = filtered_start
+    while t < filtered_end:
+        intervals.append(t)
+        t = t + interval_td
+    # ensure last bin includes filtered_end as the end boundary
+    if len(intervals) == 0:
+        raise ValueError('No intervals generated; check freq and trimmed range')
+
+    # Prepare CSV output
+    import csv as _csv
+    out_dir = os.path.dirname(output_path)
+    if out_dir and not os.path.exists(out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+
+    fieldnames = [
+        'timestamp',
+        'relative_time',
+        'goodput',
+        'slo_violations',
+        'dropped_requests',
+        'errors',
+        'p50_latency',
+        'p90_latency',
+        'total_requests',
+    ]
+
+    interval_seconds = interval_ms / 1000.0
+
+    with open(output_path, 'w', newline='') as f:
+        writer = _csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for i, start_ts in enumerate(intervals):
+            end_ts = start_ts + interval_td
+            # include rows where timestamp >= start_ts and < end_ts, except last interval include <=
+            if i == len(intervals) - 1:
+                mask = (window_df['timestamp'] >= start_ts) & (window_df['timestamp'] <= filtered_end)
+            else:
+                mask = (window_df['timestamp'] >= start_ts) & (window_df['timestamp'] < end_ts)
+
+            chunk = window_df[mask]
+            total_requests = len(chunk)
+
+            # compute dropped and errors
+            dropped_count = int((chunk.get('status_code') == dropped_code).sum()) if 'status_code' in chunk.columns else 0
+            error_count = int(chunk['is_error'].sum())
+
+            # success mask
+            success_mask = (~chunk['is_error']) & (chunk.get('status_code') == success_code)
+            success_df = chunk[success_mask]
+
+            # SLO in ms (slo is given in milliseconds)
+            slo_ms = float(slo)
+            slo_violations_count = int((success_df['latency_ms'] > slo_ms).sum())
+            goodput_count = int((success_df['latency_ms'] <= slo_ms).sum())
+
+            # rates per second (use interval_seconds; if zero, set rates to 0)
+            if interval_seconds <= 0:
+                raise ValueError("Interval duration is zero or negative")
+            else:
+                goodput = goodput_count / interval_seconds
+                slo_violations = slo_violations_count / interval_seconds
+                dropped_requests = dropped_count / interval_seconds
+                errors = error_count / interval_seconds
+
+            # latency percentiles
+            if len(success_df) > 0:
+                p50 = float(success_df['latency_ms'].quantile(0.5))
+                p90 = float(success_df['latency_ms'].quantile(0.9))
+            else:
+                raise ValueError("No successful requests in interval to compute latency percentiles")
+
+            relative_time = (start_ts - filtered_start).total_seconds()
+
+            row = {
+                'timestamp': start_ts.isoformat(),
+                'relative_time': relative_time,
+                'goodput': goodput,
+                'slo_violations': slo_violations,
+                'dropped_requests': dropped_requests,
+                'errors': errors,
+                'p50_latency': p50,
+                'p90_latency': p90,
+                'total_requests': total_requests,
+            }
+            writer.writerow(row)
+
+    return True
+
 status_dict = {
     "success": {
         1: 200,  # HTTP/1.x
@@ -205,6 +363,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
     slo = args.slo
 
+    # either realtime_output and freq must be provided, or overall_output must be provided
+    if not (args.realtime_output and args.freq) and not args.overall_output:
+        raise ValueError("Either realtime_output and freq must be provided, or overall_output must be provided.")
+    # only one of them
+    if args.realtime_output and args.freq and args.overall_output:
+        raise ValueError("Only one of realtime_output/freq or overall_output should be provided.")
+
     if args.version not in [1, 2]:
         raise ValueError("version must be 1 or 2")
     version = args.version
@@ -221,5 +386,13 @@ if __name__ == "__main__":
             print(f"Wrote overall report to {args.overall_output}")
         except Exception as e:
             print(f"Failed to create overall report: {e}")
+    
+    if args.realtime_output and args.freq:
+        try:
+            success = realtime_report(df, args.realtime_output, freq=args.freq, warmup=args.warmup, cooldown=args.cooldown)
+            if success:
+                print(f"Wrote realtime report to {args.realtime_output}")
+        except Exception as e:
+            print(f"Failed to create realtime report: {e}")
 
     
