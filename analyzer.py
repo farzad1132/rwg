@@ -262,6 +262,7 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
     # ensure last bin includes filtered_end as the end boundary
     if len(intervals) == 0:
         raise ValueError('No intervals generated; check freq and trimmed range')
+    print(f"Generated {len(intervals)} intervals from {filtered_start} to {filtered_end} with freq {freq} ms")
 
     # Prepare CSV output
     import csv as _csv
@@ -277,7 +278,7 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
         'dropped_requests',
         'errors',
         'p50_latency',
-        'p90_latency',
+        'p95_latency',
         'total_requests',
     ]
 
@@ -288,6 +289,8 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
         writer.writeheader()
 
         for i, start_ts in enumerate(intervals):
+            if i == len(intervals) - 1:
+                continue
             end_ts = start_ts + interval_td
             # include rows where timestamp >= start_ts and < end_ts, except last interval include <=
             if i == len(intervals) - 1:
@@ -296,10 +299,11 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
                 mask = (window_df['timestamp'] >= start_ts) & (window_df['timestamp'] < end_ts)
 
             chunk = window_df[mask]
-            total_requests = len(chunk) / interval_seconds
+            total_rate = len(chunk) / interval_seconds
+            total_requests = len(chunk)
 
             # compute dropped and errors
-            dropped_count = int((chunk.get('status_code') == dropped_code).sum()) if 'status_code' in chunk.columns else 0
+            dropped_count = int((chunk.get('status_code') == dropped_code).sum())
             error_count = int(chunk['is_error'].sum())
 
             # success mask
@@ -310,6 +314,13 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
             slo_ms = float(slo)
             slo_violations_count = int((success_df['latency_ms'] > slo_ms).sum())
             goodput_count = int((success_df['latency_ms'] <= slo_ms).sum())
+
+            # check counts
+            success_count = len(success_df)
+            if total_requests != (success_count + dropped_count + error_count) and total_requests > 0:
+                raise ValueError(f"i: {i}, Total request count: {total_requests} does not match sum of success: {success_count}, dropped: {dropped_count}, and error: {error_count} counts")
+            if success_count != (goodput_count + slo_violations_count):
+                raise ValueError(f"Success count: {success_count} does not match sum of goodput: {goodput_count} and SLO violations: {slo_violations_count}")
 
             # rates per second (use interval_seconds; if zero, set rates to 0)
             if interval_seconds <= 0:
@@ -323,9 +334,11 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
             # latency percentiles
             if len(success_df) > 0:
                 p50 = float(success_df['latency_ms'].quantile(0.5))
-                p90 = float(success_df['latency_ms'].quantile(0.9))
+                p95 = float(success_df['latency_ms'].quantile(0.95))
             else:
-                raise ValueError("No successful requests in interval to compute latency percentiles")
+                print(chunk.head(len(chunk)))
+                raise ValueError(f"i: {i}, No successful requests in interval to compute latency percentiles",
+                                 f"total_requests={total_requests}, dropped={dropped_count}, errors={error_count}, slo_violations={slo_violations_count}, goodput={goodput_count}")
 
             relative_time = (start_ts - filtered_start).total_seconds()
 
@@ -337,7 +350,7 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
                 'dropped_requests': dropped_requests,
                 'errors': errors,
                 'p50_latency': p50,
-                'p90_latency': p90,
+                'p95_latency': p95,
                 'total_requests': total_requests,
             }
             writer.writerow(row)
