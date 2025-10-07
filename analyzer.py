@@ -133,6 +133,13 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
     slo_violations_count = int((success_df['latency_ms'] > float(slo_ms)).sum())
     goodput_count = int((success_df['latency_ms'] <= float(slo_ms)).sum())
 
+    # check if total count matches sum of categories
+    if total_requests != (success_count + dropped_count + error_count):
+        raise ValueError("Total request count does not match sum of success, dropped, and error counts")
+    # check if success count matches sum of goodput and slo violations
+    if success_count != (goodput_count + slo_violations_count):
+        raise ValueError("Success count does not match sum of goodput and SLO violations")
+
     # rates per second
     goodput = goodput_count / duration_seconds
     slo_violations = slo_violations_count / duration_seconds
