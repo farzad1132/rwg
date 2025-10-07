@@ -122,11 +122,11 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
         dropped_count = int((window_df['status_code'] == dropped_code).sum())
     error_count = int(window_df['is_error'].sum())
     if error_count > 0 or success_code == 0:
-        # print list of unique errors
-        error_list = window_df[window_df['is_error']][['error']].drop_duplicates()
-        print(f"Unique errors ({len(error_list)}):")
-        print(error_list.to_string(index=False))
-        raise ValueError(f"Found {error_count} errors in the data; see above for details.")
+        # print only the (unique) error column values
+        error_values = window_df.loc[window_df['is_error'], 'error'].astype(str).dropna().drop_duplicates()
+        for v in error_values:
+            print(v)
+        raise ValueError(f"Found {error_count} errors in the data.")
 
     # SLO checks among successes
     slo_ms = slo
