@@ -91,17 +91,18 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
         raise ValueError("Warmup and cooldown periods remove the entire data range")
     else:
         duration_seconds = (filtered_end - filtered_start).total_seconds()
-        window_df = df[(df['timestamp'] >= filtered_start) & (df['timestamp'] <= filtered_end)]
+        mask = (df['timestamp'] >= filtered_start) & (df['timestamp'] <= filtered_end)
+        window_df = df.loc[mask].copy()
 
     # convert latency to milliseconds (input is microseconds)
     if 'latency' not in window_df.columns:
         raise ValueError("DataFrame must contain a 'latency' column")
-    window_df['latency_ms'] = window_df['latency'].astype(float) / 1000.0
+    window_df.loc[:, 'latency_ms'] = window_df['latency'].astype(float) / 1000.0
 
     # error flag: treat non-empty error string OR status_code == 0 as error
-    window_df['is_error'] = False
+    window_df.loc[:, 'is_error'] = False
     if 'error' in window_df.columns:
-        window_df['is_error'] = window_df['error'].astype(str).str.len() > 0
+        window_df.loc[:, 'is_error'] = window_df['error'].astype(str).str.len() > 0
     """ if 'status_code' in window_df.columns:
         window_df.loc[window_df['status_code'] == 0, 'is_error'] = True """
 
@@ -233,17 +234,18 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
     if filtered_start >= filtered_end:
         raise ValueError("Warmup and cooldown periods remove the entire data range")
 
-    window_df = df[(df['timestamp'] >= filtered_start) & (df['timestamp'] <= filtered_end)]
+    mask = (df['timestamp'] >= filtered_start) & (df['timestamp'] <= filtered_end)
+    window_df = df.loc[mask].copy()
 
     # Convert latency to milliseconds
     if 'latency' not in window_df.columns:
         raise ValueError("DataFrame must contain a 'latency' column")
-    window_df['latency_ms'] = window_df['latency'].astype(float) / 1000.0
+    window_df.loc[:, 'latency_ms'] = window_df['latency'].astype(float) / 1000.0
 
     # error flag
-    window_df['is_error'] = False
+    window_df.loc[:, 'is_error'] = False
     if 'error' in window_df.columns:
-        window_df['is_error'] = window_df['error'].astype(str).str.len() > 0
+        window_df.loc[:, 'is_error'] = window_df['error'].astype(str).str.len() > 0
 
     # success and dropped codes
     dropped_code = status_dict['dropped'][version]
