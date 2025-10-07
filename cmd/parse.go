@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"github.com/spf13/cobra"
 )
@@ -49,13 +50,15 @@ func init() {
 }
 
 func Parse() {
+	_, file, _, _ := runtime.Caller(0)
+	// extract parent directory
+	dir := filepath.Dir(file)
+	dir = filepath.Dir(dir) // go up one level to the project root
+
 	// Build command to run the analyzer.py script
 	python := "python3"
-	scriptPath := filepath.Join("analyzer.py")
-	// If the script path isn't found relative to cmd/, try repository root
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		scriptPath = filepath.Join("..", "..", "analyzer.py")
-	}
+	scriptPath := filepath.Join(dir, "analyzer.py")
+	fmt.Printf("Using script path: %s\n", scriptPath)
 
 	args := []string{
 		scriptPath,
@@ -74,7 +77,7 @@ func Parse() {
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 
-	fmt.Printf("Running: %s %v\n", python, args)
+	//fmt.Printf("Running: %s %v\n", python, args)
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "analyzer.py failed: %v\n", err)
 		os.Exit(1)
