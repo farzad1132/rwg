@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package protobuf;
+
+option go_package = "github.com/farzad1132/rwg/protobuf";
+
+import "frontend.proto";
+
+service RajomonClient {
+    rpc SearchHotels(SearchHotelsRequest) returns (SearchHotelsResponse);
+    rpc FrontendReservation(FrontendReservationRequest) returns (FrontendReservationResponse);
+}

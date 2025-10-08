@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"math/rand"
@@ -15,7 +16,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/farzad1132/rwg/protobuf"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 var args struct {
@@ -25,6 +30,10 @@ var args struct {
 	Durations string `arg:"required" help:"List of durations to test, e.g. 10,20,50 (in seconds)"`
 	Workers   int    `arg:"required" help:"Number of concurrent workers to use"`
 	Output    string `arg:"-o,--output" help:"Output file to write results to (CSV format)" default:"out.csv"`
+	// Args allows passing arbitrary key=value pairs from the command line.
+	// Use with --args key=value (can be repeated) or --args key1=val1,key2=val2
+	Proto string
+	Args  map[string]string
 }
 
 // runCmd represents the run command
@@ -43,6 +52,9 @@ func init() {
 	runCmd.Flags().StringVarP(&args.Durations, "durations", "D", "", "Comma-separated list of durations (in seconds), e.g. 10,20,50")
 	runCmd.Flags().IntVarP(&args.Workers, "workers", "w", 0, "Number of concurrent workers to use")
 	runCmd.Flags().StringVarP(&args.Output, "output", "o", "out.csv", "Output file to write results to (CSV format)")
+	// Accept arbitrary args key=value pairs
+	runCmd.Flags().StringToStringVarP(&args.Args, "args", "a", nil, "Args key=value,key2=value2 pairs (can be repeated)")
+	runCmd.Flags().StringVarP(&args.Proto, "proto", "p", "", "Protocol to use (http or grpc)")
 
 	if err := runCmd.MarkFlagRequired("url"); err != nil {
 		panic(err)
@@ -80,28 +92,92 @@ type Sample struct {
 	Timestamp  time.Time
 }
 
-type Worker struct {
-	Url      string
-	ch       chan bool
-	reportCh chan Sample
-	client   *http.Client
+type TransportInterface interface {
+	Issue(*Sample)
+	GetUrl() string
 }
 
-func NewWorker(url string, ch chan bool, reportCh chan Sample, client *http.Client) *Worker {
+type HTTP11Transport struct {
+	Url        string
+	httpClient *http.Client
+}
+
+func (t *HTTP11Transport) Issue(sample *Sample) {
+	resp, err := t.httpClient.Get(t.Url)
+	if err != nil {
+		sample.StatusCode = 0
+		sample.ErrStr = err.Error()
+		return
+	}
+	// Drain and close the body so Transport can reuse the connection
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	sample.StatusCode = resp.StatusCode
+	sample.ErrStr = ""
+}
+
+func (t *HTTP11Transport) GetUrl() string {
+	return t.Url
+}
+
+func NewHTTP11Transport(url string) *HTTP11Transport {
+	tr := &http.Transport{
+		MaxIdleConns:        1,
+		MaxIdleConnsPerHost: 1,
+		MaxConnsPerHost:     1,
+		IdleConnTimeout:     60 * time.Second,
+	}
+	client := &http.Client{Transport: tr, Timeout: 1 * time.Second}
+	return &HTTP11Transport{
+		Url:        url,
+		httpClient: client,
+	}
+}
+
+type GRPCTransport struct {
+	call func() error
+	Url  string
+}
+
+func (t *GRPCTransport) Issue(sample *Sample) {
+	err := t.call()
+	if err != nil {
+		sample.StatusCode = int(status.Code(err))
+		sample.ErrStr = fmt.Sprintf("error code: %d", status.Code(err))
+		return
+	}
+	sample.StatusCode = 0
+	sample.ErrStr = ""
+}
+
+func (t *GRPCTransport) GetUrl() string {
+	return t.Url
+}
+
+func NewGRPCTransport(call func() error, url string) *GRPCTransport {
+	return &GRPCTransport{
+		call: call,
+		Url:  url,
+	}
+}
+
+type Worker struct {
+	transport TransportInterface
+	ch        chan bool
+	reportCh  chan Sample
+}
+
+func NewWorker(ch chan bool, reportCh chan Sample, transport TransportInterface) *Worker {
 	return &Worker{
-		Url:      url,
-		ch:       ch,
-		reportCh: reportCh,
-		client:   client,
+		transport: transport,
+		ch:        ch,
+		reportCh:  reportCh,
 	}
 }
 
 func (w *Worker) Start() {
 	var sample Sample
-	sample.Url = w.Url
-
-	var resp *http.Response
-	var err error
+	sample.Url = w.transport.GetUrl()
 	var start time.Time
 
 	for ok := range w.ch {
@@ -109,18 +185,8 @@ func (w *Worker) Start() {
 			return
 		}
 		start = time.Now()
-		resp, err = w.client.Get(w.Url)
+		w.transport.Issue(&sample)
 		sample.Latency = time.Since(start).Microseconds()
-		if err != nil {
-			sample.StatusCode = 0
-			sample.ErrStr = err.Error()
-		} else {
-			sample.StatusCode = resp.StatusCode
-			// Drain and close the body so Transport can reuse the connection
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-			sample.ErrStr = ""
-		}
 		sample.Timestamp = start
 		w.reportCh <- sample
 	}
@@ -268,6 +334,90 @@ func (ew *ExponentialWait) UpdatePhaseRate(rate int) {
 	ew.rate = float64(rate)
 }
 
+func CheckArgsPresent(required ...string) {
+	for _, key := range required {
+		if _, ok := args.Args[key]; !ok {
+			panic("Missing required argument: " + key)
+		}
+	}
+}
+
+// Url is in the format of package.service/method
+func CreateGRPCTransport(url string, Args map[string]string) TransportInterface {
+	conn, err := grpc.NewClient(url, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		panic(err)
+	}
+
+	cut := strings.Split(args.Proto, "/")
+	service := cut[0]
+	method := cut[1]
+
+	if service == "protobuf.RajomonClient" {
+		client := protobuf.NewRajomonClientClient(conn)
+
+		switch method {
+		case "SearchHotels":
+			CheckArgsPresent("lat", "lon", "InDate", "OutDate")
+			lat, err := strconv.ParseFloat(Args["lat"], 64)
+			if err != nil {
+				panic("Invalid lat argument")
+			}
+			lon, err := strconv.ParseFloat(Args["lon"], 64)
+			if err != nil {
+				panic("Invalid lon argument")
+			}
+			return NewGRPCTransport(func() error {
+				_, err := client.SearchHotels(
+					context.Background(),
+					&protobuf.SearchHotelsRequest{
+						Lat:     float32(lat),
+						Lon:     float32(lon),
+						InDate:  Args["InDate"],
+						OutDate: Args["OutDate"],
+					},
+				)
+				return err
+			}, url)
+		case "FrontendReservation":
+			CheckArgsPresent("HotelId", "CustomerName", "Username", "Password", "number", "InDate", "OutDate")
+			number, err := strconv.Atoi(Args["number"])
+			if err != nil {
+				panic("Invalid number argument")
+			}
+			return NewGRPCTransport(func() error {
+				_, err := client.FrontendReservation(
+					context.Background(),
+					&protobuf.FrontendReservationRequest{
+						HotelId:      Args["HotelId"],
+						CustomerName: Args["CustomerName"],
+						Username:     Args["Username"],
+						Password:     Args["Password"],
+						Number:       int32(number),
+						InDate:       Args["InDate"],
+						OutDate:      Args["OutDate"],
+					},
+				)
+				return err
+			}, url)
+		default:
+			panic("Unknown method: " + method)
+		}
+	} else {
+		panic("Unknown service: " + service)
+	}
+
+}
+
+func CreateTransport() TransportInterface {
+	// Currently we only support HTTP/1.1 transports. In future we can
+	// inspect the scheme and return a gRPC transport when needed.
+	if strings.HasPrefix(args.Url, "http://") || strings.HasPrefix(args.Url, "https://") {
+		return NewHTTP11Transport(args.Url)
+	}
+	return CreateGRPCTransport(args.Url, args.Args)
+}
+
 func Run() {
 
 	// Sanity checks on args
@@ -315,14 +465,8 @@ func Run() {
 	reportCh := make(chan Sample, args.Workers*50)
 
 	for i := 0; i < args.Workers; i++ {
-		tr := &http.Transport{
-			MaxIdleConns:        1,
-			MaxIdleConnsPerHost: 1,
-			MaxConnsPerHost:     1,
-			IdleConnTimeout:     60 * time.Second,
-		}
-		client := &http.Client{Transport: tr, Timeout: 1 * time.Second}
-		workers[i] = NewWorker(args.Url, ch, reportCh, client)
+		transport := CreateTransport()
+		workers[i] = NewWorker(ch, reportCh, transport)
 		go workers[i].Start()
 	}
 	collector := NewCollector(reportCh, numSamples)

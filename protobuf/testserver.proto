@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package protobuf;
+
+option go_package = "github.com/farzad1132/rwg/protobuf";
+
+// Frontend service definition
+service GRPCServer {
+  rpc Testendpoint(TestRequest) returns (TestResponse);
+}
+
+message TestRequest {
+  string Input = 1;
+}
+
+message TestResponse {
+  string Output = 1;
+}

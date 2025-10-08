@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package protobuf;
+
+option go_package = "github.com/farzad1132/rwg/protobuf";
+
+import "profile.proto";
+
+// Frontend service definition
+service FrontendService {
+  rpc SearchHotels(SearchHotelsRequest) returns (SearchHotelsResponse);
+//  rpc StoreHotel(StoreHotelRequest) returns (StoreHotelResponse);
+  rpc FrontendReservation(FrontendReservationRequest) returns (FrontendReservationResponse);
+}
+
+message SearchHotelsRequest {
+  string InDate = 1;
+  string OutDate = 2;
+  float lat = 3;
+  float lon = 4;
+}
+
+message SearchHotelsResponse {
+  repeated Hotel Profiles = 1;
+}
+
+message StoreHotelRequest {
+  string HotelId = 1;
+  string Name = 2;
+  string Phone = 3;
+  string Location = 4;
+  int32 Rate = 5;
+  int32 Capacity = 6;
+  string Info = 7;
+}
+
+message StoreHotelResponse {
+  string HotelId = 1;
+}
+
+message FrontendReservationRequest {
+  string HotelId = 1;
+  string InDate = 2;
+  string OutDate = 3;
+  string CustomerName = 4;
+  int32 Number = 5;
+  string Username = 6;
+  string Password = 7;
+}
+
+message FrontendReservationResponse {
+  bool Success = 1;
+}
