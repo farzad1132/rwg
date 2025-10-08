@@ -336,9 +336,9 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
                 p50 = float(success_df['latency_ms'].quantile(0.5))
                 p95 = float(success_df['latency_ms'].quantile(0.95))
             else:
-                print(chunk.head(len(chunk)))
-                raise ValueError(f"i: {i}, No successful requests in interval to compute latency percentiles",
-                                 f"total_requests={total_requests}, dropped={dropped_count}, errors={error_count}, slo_violations={slo_violations_count}, goodput={goodput_count}")
+                p50 = 0.0
+                p95 = 0.0
+                print(f"[Warning] i: {i}, No successful requests in interval to compute latency percentiles")
 
             relative_time = (start_ts - filtered_start).total_seconds()
 
