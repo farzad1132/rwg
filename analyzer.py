@@ -102,7 +102,7 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
     # error flag: treat non-empty error string OR status_code == 0 as error
     window_df.loc[:, 'is_error'] = False
     if 'error' in window_df.columns:
-        window_df.loc[:, 'is_error'] = window_df['error'].astype(str).str.len() > 0
+        window_df.loc[:, 'is_error'] = ~window_df['status_code'].isin([status_dict['success'][version], status_dict['dropped'][version]])
     """ if 'status_code' in window_df.columns:
         window_df.loc[window_df['status_code'] == 0, 'is_error'] = True """
 
@@ -244,8 +244,8 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
 
     # error flag
     window_df.loc[:, 'is_error'] = False
-    if 'error' in window_df.columns:
-        window_df.loc[:, 'is_error'] = window_df['error'].astype(str).str.len() > 0
+    if 'status_code' in window_df.columns:
+        window_df.loc[:, 'is_error'] = ~window_df['status_code'].isin([status_dict['success'][version], status_dict['dropped'][version]])
 
     # success and dropped codes
     dropped_code = status_dict['dropped'][version]
