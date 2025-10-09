@@ -11,5 +11,6 @@ RWG is a minimal but fast **open loop** workload generator designed for flexibil
 
 # TODO
 
+- [ ] Add capability to replay traces
 - [ ] Add bimodal inter-arrival distribution 
 - [ ] Add dynamic stib generation using `reflection` as opposed to relying on static stubs
