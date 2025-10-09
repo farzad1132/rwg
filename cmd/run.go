@@ -355,7 +355,8 @@ func CreateGRPCTransport(url string, Args map[string]string) TransportInterface 
 	service := cut[0]
 	method := cut[1]
 
-	if service == "protobuf.RajomonClient" {
+	switch service {
+	case "protobuf.RajomonClient":
 		client := protobuf.NewRajomonClientClient(conn)
 
 		switch method {
@@ -405,7 +406,7 @@ func CreateGRPCTransport(url string, Args map[string]string) TransportInterface 
 		default:
 			panic("Unknown method: " + method)
 		}
-	} else if service == "protobuf.GRPCServer" {
+	case "protobuf.GRPCServer":
 		client := protobuf.NewGRPCServerClient(conn)
 		CheckArgsPresent("Input")
 		return NewGRPCTransport(func() error {
@@ -418,7 +419,7 @@ func CreateGRPCTransport(url string, Args map[string]string) TransportInterface 
 			return err
 		}, url)
 
-	} else {
+	default:
 		panic("Unknown service: " + service)
 	}
 
