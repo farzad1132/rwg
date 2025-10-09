@@ -127,7 +127,6 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
         error_values = window_df.loc[window_df['is_error'], 'error'].astype(str).dropna().drop_duplicates()
         for v in error_values:
             print(v)
-        raise ValueError(f"Found {error_count} errors in the data.")
 
     # SLO checks among successes
     slo_ms = slo
