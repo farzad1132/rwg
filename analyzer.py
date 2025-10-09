@@ -103,8 +103,6 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
     window_df.loc[:, 'is_error'] = False
     if 'error' in window_df.columns:
         window_df.loc[:, 'is_error'] = ~window_df['status_code'].isin([status_dict['success'][version], status_dict['dropped'][version]])
-    """ if 'status_code' in window_df.columns:
-        window_df.loc[window_df['status_code'] == 0, 'is_error'] = True """
 
     # determine dropped and success codes based on version
     dropped_code = status_dict['dropped'][version]
