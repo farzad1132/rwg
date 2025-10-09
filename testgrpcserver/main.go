@@ -18,6 +18,7 @@ type Server struct {
 
 func (s *Server) Testendpoint(ctx context.Context, req *protobuf.TestRequest) (*protobuf.TestResponse, error) {
 	// just echo back the input string for testing
+	time.Sleep(10 * time.Millisecond) // simulate some processing delay
 	resp := &protobuf.TestResponse{
 		Output: "Hello, " + req.Input,
 	}
