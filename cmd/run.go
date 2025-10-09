@@ -405,6 +405,19 @@ func CreateGRPCTransport(url string, Args map[string]string) TransportInterface 
 		default:
 			panic("Unknown method: " + method)
 		}
+	} else if service == "protobuf.GRPCServer" {
+		client := protobuf.NewGRPCServerClient(conn)
+		CheckArgsPresent("Input")
+		return NewGRPCTransport(func() error {
+			_, err := client.Testendpoint(
+				context.Background(),
+				&protobuf.TestRequest{
+					Input: Args["Input"],
+				},
+			)
+			return err
+		}, url)
+
 	} else {
 		panic("Unknown service: " + service)
 	}
