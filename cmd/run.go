@@ -167,6 +167,8 @@ type Worker struct {
 	reportCh  chan Sample
 }
 
+const MaxConcurrency = 100
+
 func NewWorker(ch chan bool, reportCh chan Sample, transport TransportInterface) *Worker {
 	return &Worker{
 		transport: transport,
@@ -418,6 +420,13 @@ func CreateTransport() TransportInterface {
 	return CreateGRPCTransport(args.Url, args.Args)
 }
 
+func VersionFinder() int {
+	if strings.HasPrefix(args.Url, "http://") || strings.HasPrefix(args.Url, "https://") {
+		return 1
+	}
+	return 2
+}
+
 func Run() {
 
 	// Sanity checks on args
@@ -463,9 +472,19 @@ func Run() {
 	workers := make([]*Worker, args.Workers)
 	ch := make(chan bool)
 	reportCh := make(chan Sample, args.Workers*50)
-
+	version := VersionFinder()
+	index := 0
+	var transport TransportInterface
 	for i := 0; i < args.Workers; i++ {
-		transport := CreateTransport()
+		switch version {
+		case 1:
+			transport = CreateTransport()
+		case 2:
+			if index%MaxConcurrency == 0 {
+				transport = CreateTransport()
+			}
+			index++
+		}
 		workers[i] = NewWorker(ch, reportCh, transport)
 		go workers[i].Start()
 	}
