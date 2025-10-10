@@ -121,6 +121,7 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
         dropped_count = int((window_df['status_code'] == dropped_code).sum())
     error_count = int(window_df['is_error'].sum())
     if error_count > 0:
+        print(f"[Warning] Found {error_count} error requests in the data. Unique error messages:")
         # print only the (unique) error column values
         error_values = window_df.loc[window_df['is_error'], 'error'].astype(str).dropna().drop_duplicates()
         for v in error_values:
