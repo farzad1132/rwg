@@ -377,7 +377,7 @@ if __name__ == "__main__":
     parser.add_argument("--warmup", type=int, default=0, help="Warmup duration in seconds.")
     parser.add_argument("--cooldown", type=int, default=0, help="Cooldown duration in seconds.")
     parser.add_argument("--version", type=int, help="HTTP version (1 or 2).")
-    parser.add_argument("--slo", type=int, default=1000, help="SLO in milliseconds.")
+    parser.add_argument("--slo", type=int, help="SLO in milliseconds.")
 
     args = parser.parse_args()
     slo = args.slo
