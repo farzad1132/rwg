@@ -1,3 +1,4 @@
 *.csv
 rwg
 *.json
+/venv
