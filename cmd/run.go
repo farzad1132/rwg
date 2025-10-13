@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -32,8 +33,9 @@ var args struct {
 	Output    string `arg:"-o,--output" help:"Output file to write results to (CSV format)" default:"out.csv"`
 	// Args allows passing arbitrary key=value pairs from the command line.
 	// Use with --args key=value (can be repeated) or --args key1=val1,key2=val2
-	Proto string
-	Args  map[string]string
+	Proto      string
+	Args       map[string]string
+	PrintStats bool
 }
 
 // runCmd represents the run command
@@ -55,6 +57,7 @@ func init() {
 	// Accept arbitrary args key=value pairs
 	runCmd.Flags().StringToStringVarP(&args.Args, "args", "a", nil, "Args key=value,key2=value2 pairs (can be repeated)")
 	runCmd.Flags().StringVarP(&args.Proto, "proto", "p", "", "Protocol to use (http or grpc)")
+	runCmd.Flags().BoolVarP(&args.PrintStats, "stats", "s", true, "Print stats at the end of the test")
 
 	if err := runCmd.MarkFlagRequired("url"); err != nil {
 		panic(err)
@@ -210,9 +213,10 @@ func (c *Collector) Start() {
 	for sample := range c.reportCh {
 		c.Samples = append(c.Samples, sample)
 	}
-	fmt.Printf("Collected %d samples\n", len(c.Samples))
+	if args.PrintStats {
+		c.PrintStats()
+	}
 	if args.Output != "" {
-		fmt.Printf("Writing results to %s\n", args.Output)
 		f, err := os.OpenFile(args.Output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
 			panic(err)
@@ -254,10 +258,66 @@ func (c *Collector) Start() {
 		if err := w.Flush(); err != nil {
 			panic(err)
 		}
-		fmt.Println("Done")
+		fmt.Println("Exported results to ", args.Output)
 	} else {
 		fmt.Println("No output file specified, not writing results")
 	}
+}
+
+// This is executed at the end of the test and reports
+// - number of errors
+// number of requests with different status codes
+// - rate of successfull requests (empty string for error)
+// p50 and p95 latency
+// total requests
+// duration of test
+func (c *Collector) PrintStats() {
+	// duration is sum of durations of all phases
+	totalDuration := 0
+	for _, d := range strings.Split(args.Durations, ",") {
+		duration, err := strconv.Atoi(d)
+		if err != nil {
+			panic(fmt.Sprintf("Invalid duration: %s", d))
+		}
+		totalDuration += duration
+	}
+	// number of errors and number of requests with different status codes
+	statusCodeCounts := make(map[int]int)
+	numErrors := 0
+	for _, sample := range c.Samples {
+		if sample.ErrStr != "" {
+			numErrors++
+		} else {
+			statusCodeCounts[sample.StatusCode]++
+		}
+	}
+	// print number of requests with different status codes
+	for statusCode, count := range statusCodeCounts {
+		fmt.Printf("| %-25s | %-12d | %-13.1f |\n", "status code: "+strconv.Itoa(statusCode), count, float64(count)/float64(totalDuration))
+	}
+	// rate of successfull requests
+	rateSuccess := float64(len(c.Samples)-numErrors) / float64(totalDuration)
+	// p50 and p95 latency
+	sort.Slice(c.Samples, func(i, j int) bool {
+		return c.Samples[i].Latency < c.Samples[j].Latency
+	})
+	p50Latency := c.Samples[len(c.Samples)/2].Latency
+	p95Latency := c.Samples[len(c.Samples)*95/100].Latency
+	minLatency := c.Samples[0].Latency
+	maxLatency := c.Samples[len(c.Samples)-1].Latency
+	// total requests
+	totalRequests := len(c.Samples)
+	// print stats in table format
+	fmt.Println("+---------------------------+---------------------------+")
+	fmt.Printf("| %-25s | %-25v |\n", "Number of errors", numErrors)
+	fmt.Printf("| %-25s | %-25.6f |\n", "Successfull requests", rateSuccess)
+	fmt.Printf("| %-25s | %-25d |\n", "Min latency", minLatency)
+	fmt.Printf("| %-25s | %-25d |\n", "P50 latency", p50Latency)
+	fmt.Printf("| %-25s | %-25d |\n", "P95 latency", p95Latency)
+	fmt.Printf("| %-25s | %-25d |\n", "Max latency", maxLatency)
+	fmt.Printf("| %-25s | %-25d |\n", "Total requests", totalRequests)
+	fmt.Printf("| %-25s | %-25d |\n", "Duration of test", totalDuration)
+	fmt.Println("+---------------------------+---------------------------+")
 }
 
 // preciseSleep sleeps until the provided deadline using a hybrid strategy:
@@ -514,7 +574,10 @@ func Run() {
 	phaseIndex := 0
 	cal.UpdatePhaseRate(rates[phaseIndex])
 	spinWait := &SpinWait{}
-	fmt.Printf("Starting phase %d: rate=%d, duration=%d\n", phaseIndex, rates[phaseIndex], durations[phaseIndex])
+	// print phases with rate and duration
+	for i := 0; i < len(rates); i++ {
+		fmt.Printf("Phase %d: rate=%d, duration=%d\n", i, rates[i], durations[i])
+	}
 
 	// Main loop
 	fmt.Println("Starting the test")
