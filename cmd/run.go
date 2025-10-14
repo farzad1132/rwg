@@ -20,6 +20,7 @@ import (
 	"github.com/farzad1132/rwg/protobuf"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
@@ -146,7 +147,11 @@ func (t *GRPCTransport) Issue(sample *Sample) {
 	err := t.call()
 	if err != nil {
 		sample.StatusCode = int(status.Code(err))
-		sample.ErrStr = fmt.Sprintf("error code: %d", status.Code(err))
+		if sample.StatusCode == int(codes.ResourceExhausted) {
+			sample.ErrStr = ""
+		} else {
+			sample.ErrStr = fmt.Sprintf("error code: %d", status.Code(err))
+		}
 		return
 	}
 	sample.StatusCode = 0
