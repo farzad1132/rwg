@@ -126,12 +126,9 @@ func (t *HTTP11Transport) GetUrl() string {
 
 func NewHTTP11Transport(url string) *HTTP11Transport {
 	tr := &http.Transport{
-		MaxIdleConns:        1,
-		MaxIdleConnsPerHost: 1,
-		MaxConnsPerHost:     1,
-		IdleConnTimeout:     60 * time.Second,
+		IdleConnTimeout: 60 * time.Minute,
 	}
-	client := &http.Client{Transport: tr, Timeout: 1 * time.Second}
+	client := &http.Client{Transport: tr, Timeout: 60 * time.Minute}
 	return &HTTP11Transport{
 		Url:        url,
 		httpClient: client,
