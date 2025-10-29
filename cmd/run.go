@@ -314,7 +314,7 @@ func (c *Collector) PrintStats() {
 	totalRequests := len(c.Samples)
 	// print stats in table format
 	fmt.Println("+---------------------------+---------------------------+")
-	fmt.Printf("| %-25s | %-25v |\n", "Number of errors", numErrors)
+	fmt.Printf("\033[1;31m| %-25s | %-25v |\033[0m\n", "Number of errors", numErrors)
 	fmt.Printf("| %-25s | %-25.6f |\n", "Successfull requests", rateSuccess)
 	fmt.Printf("| %-25s | %-25d |\n", "Min latency", minLatency)
 	fmt.Printf("| %-25s | %-25d |\n", "P50 latency", p50Latency)
