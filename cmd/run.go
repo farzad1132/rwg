@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/farzad1132/rwg/protobuf"
@@ -553,6 +554,7 @@ func Run() {
 	reportCh := make(chan Sample, args.Workers*50)
 	version := VersionFinder()
 	index := 0
+	workersWg := sync.WaitGroup{}
 	var transport TransportInterface
 	for i := 0; i < args.Workers; i++ {
 		switch version {
@@ -565,10 +567,19 @@ func Run() {
 			index++
 		}
 		workers[i] = NewWorker(ch, reportCh, transport)
-		go workers[i].Start()
+		workersWg.Add(1)
+		go func() {
+			defer workersWg.Done()
+			workers[i].Start()
+		}()
 	}
 	collector := NewCollector(reportCh, numSamples)
-	go collector.Start()
+	collectorWg := sync.WaitGroup{}
+	collectorWg.Add(1)
+	go func() {
+		defer collectorWg.Done()
+		collector.Start()
+	}()
 	time.Sleep(10 * time.Millisecond) // Wait for workers and collector to start
 	var cal WaitCalculator
 	if args.Dist == "fixed" {
@@ -592,12 +603,11 @@ func Run() {
 		case <-timer.C:
 			phaseIndex++
 			if phaseIndex >= len(rates) {
-				//fmt.Printf("GOMAXPROCS=%d\n", runtime.GOMAXPROCS(0))
 				fmt.Println("All phases completed")
 				close(ch)
-				time.Sleep(1000 * time.Millisecond) // Wait for inflight requests to finish
+				workersWg.Wait()
 				close(reportCh)
-				time.Sleep(100 * time.Millisecond) // Wait for collector to finish
+				collectorWg.Wait()
 				if collector.SkippedIterations > 0 {
 					os.Exit(1)
 				}
