@@ -200,8 +200,9 @@ func (w *Worker) Start() {
 }
 
 type Collector struct {
-	reportCh chan Sample
-	Samples  []Sample
+	reportCh          chan Sample
+	Samples           []Sample
+	SkippedIterations int
 }
 
 func NewCollector(reportCh chan Sample, size int) *Collector {
@@ -293,6 +294,8 @@ func (c *Collector) PrintStats() {
 			statusCodeCounts[sample.StatusCode]++
 		}
 	}
+	// number of skipped iterations (in red color)
+	fmt.Printf("\033[31m| %-25s | %-12d | %-13.1f |\033[0m\n", "Skipped iterations", c.SkippedIterations, float64(c.SkippedIterations)/float64(totalDuration))
 	// print number of requests with different status codes
 	for statusCode, count := range statusCodeCounts {
 		fmt.Printf("| %-25s | %-12d | %-13.1f |\n", "status code: "+strconv.Itoa(statusCode), count, float64(count)/float64(totalDuration))
@@ -595,13 +598,16 @@ func Run() {
 				time.Sleep(1000 * time.Millisecond) // Wait for inflight requests to finish
 				close(reportCh)
 				time.Sleep(100 * time.Millisecond) // Wait for collector to finish
-				return
+				if collector.SkippedIterations > 0 {
+					os.Exit(1)
+				}
+				os.Exit(0)
 			}
 			timer.Reset(time.Duration(durations[phaseIndex]) * time.Second)
 			cal.UpdatePhaseRate(rates[phaseIndex])
 		case ch <- true:
 		default:
-			panic("Channel is full")
+			collector.SkippedIterations++
 		}
 
 		spinWait.Wait(cal.GetWaitTime())
