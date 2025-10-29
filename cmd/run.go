@@ -204,6 +204,7 @@ type Collector struct {
 	reportCh          chan Sample
 	Samples           []Sample
 	SkippedIterations int
+	NumErrors         int
 }
 
 func NewCollector(reportCh chan Sample, size int) *Collector {
@@ -287,10 +288,10 @@ func (c *Collector) PrintStats() {
 	}
 	// number of errors and number of requests with different status codes
 	statusCodeCounts := make(map[int]int)
-	numErrors := 0
+	c.NumErrors = 0
 	for _, sample := range c.Samples {
 		if sample.ErrStr != "" {
-			numErrors++
+			c.NumErrors++
 		} else {
 			statusCodeCounts[sample.StatusCode]++
 		}
@@ -302,7 +303,7 @@ func (c *Collector) PrintStats() {
 		fmt.Printf("| %-25s | %-12d | %-13.1f |\n", "status code: "+strconv.Itoa(statusCode), count, float64(count)/float64(totalDuration))
 	}
 	// rate of successfull requests
-	rateSuccess := float64(len(c.Samples)-numErrors) / float64(totalDuration)
+	rateSuccess := float64(len(c.Samples)-c.NumErrors) / float64(totalDuration)
 	// p50 and p95 latency
 	sort.Slice(c.Samples, func(i, j int) bool {
 		return c.Samples[i].Latency < c.Samples[j].Latency
@@ -315,7 +316,7 @@ func (c *Collector) PrintStats() {
 	totalRequests := len(c.Samples)
 	// print stats in table format
 	fmt.Println("+---------------------------+---------------------------+")
-	fmt.Printf("\033[1;31m| %-25s | %-25v |\033[0m\n", "Number of errors", numErrors)
+	fmt.Printf("\033[1;31m| %-25s | %-25v |\033[0m\n", "Number of errors", c.NumErrors)
 	fmt.Printf("| %-25s | %-25.6f |\n", "Successfull requests", rateSuccess)
 	fmt.Printf("| %-25s | %-25d |\n", "Min latency", minLatency)
 	fmt.Printf("| %-25s | %-25d |\n", "P50 latency", p50Latency)
@@ -608,7 +609,7 @@ func Run() {
 				workersWg.Wait()
 				close(reportCh)
 				collectorWg.Wait()
-				if collector.SkippedIterations > 0 {
+				if collector.SkippedIterations > 0 || collector.NumErrors > 0 {
 					os.Exit(1)
 				}
 				os.Exit(0)
