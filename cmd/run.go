@@ -129,7 +129,7 @@ func NewHTTP11Transport(url string) *HTTP11Transport {
 	tr := &http.Transport{
 		IdleConnTimeout: 60 * time.Minute,
 	}
-	client := &http.Client{Transport: tr, Timeout: 60 * time.Minute}
+	client := &http.Client{Transport: tr, Timeout: 2 * time.Second}
 	return &HTTP11Transport{
 		Url:        url,
 		httpClient: client,
