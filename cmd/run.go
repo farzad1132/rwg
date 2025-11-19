@@ -310,6 +310,8 @@ func (c *Collector) PrintStats() {
 	})
 	p50Latency := c.Samples[len(c.Samples)/2].Latency
 	p95Latency := c.Samples[len(c.Samples)*95/100].Latency
+	p99Latency := c.Samples[len(c.Samples)*99/100].Latency
+	p999Latency := c.Samples[len(c.Samples)*999/1000].Latency
 	minLatency := c.Samples[0].Latency
 	maxLatency := c.Samples[len(c.Samples)-1].Latency
 	// total requests
@@ -321,6 +323,8 @@ func (c *Collector) PrintStats() {
 	fmt.Printf("| %-25s | %-25d |\n", "Min latency", minLatency)
 	fmt.Printf("| %-25s | %-25d |\n", "P50 latency", p50Latency)
 	fmt.Printf("| %-25s | %-25d |\n", "P95 latency", p95Latency)
+	fmt.Printf("\033[1m| %-25s | %-25d |\033[0m\n", "P99 latency", p99Latency)
+	fmt.Printf("\033[1m| %-25s | %-25d |\033[0m\n", "P99.9 latency", p999Latency)
 	fmt.Printf("| %-25s | %-25d |\n", "Max latency", maxLatency)
 	fmt.Printf("| %-25s | %-25d |\n", "Total requests", totalRequests)
 	fmt.Printf("| %-25s | %-25d |\n", "Duration of test", totalDuration)

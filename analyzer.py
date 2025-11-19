@@ -152,7 +152,7 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
     else:
         p50 = float(latency_source.quantile(0.5))
         p95 = float(latency_source.quantile(0.95))
-
+        p99 = float(latency_source.quantile(0.99))
     # prepare output data
     out_row = {
         'goodput': goodput,
@@ -166,11 +166,14 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
         'num_errors': error_count,
         'p50_latency': p50,
         'p95_latency': p95,
+        'p99_latency': p99,
         'total_requests': total_requests,
         'duration_seconds': duration_seconds,
         'start_time': start.isoformat(),
         'end_time': end.isoformat(),
     }
+
+    print(f"Goodput: {goodput}")
 
     # ensure directory exists
     out_dir = os.path.dirname(output_path)
@@ -277,6 +280,7 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
         'errors',
         'p50_latency',
         'p95_latency',
+        'p99_latency',
         'total_requests',
     ]
 
@@ -333,9 +337,11 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
             if len(success_df) > 0:
                 p50 = float(success_df['latency_ms'].quantile(0.5))
                 p95 = float(success_df['latency_ms'].quantile(0.95))
+                p99 = float(success_df['latency_ms'].quantile(0.99))
             else:
                 p50 = 0.0
                 p95 = 0.0
+                p99 = 0.0
                 print(f"[Warning] i: {i}, No successful requests in interval to compute latency percentiles")
 
             relative_time = (start_ts - filtered_start).total_seconds()
@@ -349,6 +355,7 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
                 'errors': errors,
                 'p50_latency': p50,
                 'p95_latency': p95,
+                'p99_latency': p99,
                 'total_requests': total_rate,
             }
             writer.writerow(row)
