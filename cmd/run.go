@@ -38,6 +38,7 @@ var args struct {
 	Proto      string
 	Args       map[string]string
 	PrintStats bool
+	Timeout    int
 }
 
 // runCmd represents the run command
@@ -60,6 +61,7 @@ func init() {
 	runCmd.Flags().StringToStringVarP(&args.Args, "args", "a", nil, "Args key=value,key2=value2 pairs (can be repeated)")
 	runCmd.Flags().StringVarP(&args.Proto, "proto", "p", "", "Protocol to use (http or grpc)")
 	runCmd.Flags().BoolVarP(&args.PrintStats, "stats", "s", true, "Print stats at the end of the test")
+	runCmd.Flags().IntVarP(&args.Timeout, "timeout", "t", 5, "Request timeout in seconds")
 
 	if err := runCmd.MarkFlagRequired("url"); err != nil {
 		panic(err)
@@ -95,6 +97,7 @@ type Sample struct {
 	StatusCode int
 	ErrStr     string
 	Timestamp  time.Time
+	IsTimeout  bool
 }
 
 type TransportInterface interface {
@@ -112,6 +115,9 @@ func (t *HTTP11Transport) Issue(sample *Sample) {
 	if err != nil {
 		sample.StatusCode = 0
 		sample.ErrStr = err.Error()
+		if os.IsTimeout(err) {
+			sample.IsTimeout = true
+		}
 		return
 	}
 	// Drain and close the body so Transport can reuse the connection
@@ -129,7 +135,7 @@ func NewHTTP11Transport(url string) *HTTP11Transport {
 	tr := &http.Transport{
 		IdleConnTimeout: 60 * time.Minute,
 	}
-	client := &http.Client{Transport: tr, Timeout: 2 * time.Second}
+	client := &http.Client{Transport: tr, Timeout: time.Duration(args.Timeout) * time.Second}
 	return &HTTP11Transport{
 		Url:        url,
 		httpClient: client,
@@ -145,6 +151,9 @@ func (t *GRPCTransport) Issue(sample *Sample) {
 	err := t.call()
 	if err != nil {
 		sample.StatusCode = int(status.Code(err))
+		if sample.StatusCode == int(codes.DeadlineExceeded) {
+			sample.IsTimeout = true
+		}
 		if sample.StatusCode == int(codes.ResourceExhausted) {
 			sample.ErrStr = ""
 		} else {
@@ -193,6 +202,7 @@ func (w *Worker) Start() {
 			return
 		}
 		start = time.Now()
+		sample.IsTimeout = false
 		w.transport.Issue(&sample)
 		sample.Latency = time.Since(start).Microseconds()
 		sample.Timestamp = start
@@ -205,6 +215,7 @@ type Collector struct {
 	Samples           []Sample
 	SkippedIterations int
 	NumErrors         int
+	NumTimeouts       int
 }
 
 func NewCollector(reportCh chan Sample, size int) *Collector {
@@ -289,9 +300,13 @@ func (c *Collector) PrintStats() {
 	// number of errors and number of requests with different status codes
 	statusCodeCounts := make(map[int]int)
 	c.NumErrors = 0
+	c.NumTimeouts = 0
 	for _, sample := range c.Samples {
 		if sample.ErrStr != "" {
 			c.NumErrors++
+			if sample.IsTimeout {
+				c.NumTimeouts++
+			}
 		} else {
 			statusCodeCounts[sample.StatusCode]++
 		}
@@ -319,6 +334,7 @@ func (c *Collector) PrintStats() {
 	// print stats in table format
 	fmt.Println("+---------------------------+---------------------------+")
 	fmt.Printf("\033[1;31m| %-25s | %-25v |\033[0m\n", "Number of errors", c.NumErrors)
+	fmt.Printf("\033[1;31m| %-25s | %-25v |\033[0m\n", "Number of timeouts", c.NumTimeouts)
 	fmt.Printf("| %-25s | %-25.6f |\n", "Successfull requests", rateSuccess)
 	fmt.Printf("| %-25s | %-25d |\n", "Min latency", minLatency)
 	fmt.Printf("| %-25s | %-25d |\n", "P50 latency", p50Latency)
@@ -442,8 +458,10 @@ func CreateGRPCTransport(url string, Args map[string]string) TransportInterface 
 				panic("Invalid lon argument")
 			}
 			return NewGRPCTransport(func() error {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(args.Timeout)*time.Second)
+				defer cancel()
 				_, err := client.SearchHotels(
-					context.Background(),
+					ctx,
 					&protobuf.SearchHotelsRequest{
 						Lat:     float32(lat),
 						Lon:     float32(lon),
@@ -460,8 +478,10 @@ func CreateGRPCTransport(url string, Args map[string]string) TransportInterface 
 				panic("Invalid number argument")
 			}
 			return NewGRPCTransport(func() error {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(args.Timeout)*time.Second)
+				defer cancel()
 				_, err := client.FrontendReservation(
-					context.Background(),
+					ctx,
 					&protobuf.FrontendReservationRequest{
 						HotelId:      Args["HotelId"],
 						CustomerName: Args["CustomerName"],
@@ -481,8 +501,10 @@ func CreateGRPCTransport(url string, Args map[string]string) TransportInterface 
 		client := protobuf.NewGRPCServerClient(conn)
 		CheckArgsPresent("Input")
 		return NewGRPCTransport(func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(args.Timeout)*time.Second)
+			defer cancel()
 			_, err := client.Testendpoint(
-				context.Background(),
+				ctx,
 				&protobuf.TestRequest{
 					Input: Args["Input"],
 				},
