@@ -144,6 +144,7 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
     slo_violations = slo_violations_count / duration_seconds
     dropped_requests = dropped_count / duration_seconds
     errors = error_count / duration_seconds
+    success = success_count / duration_seconds
 
     # latency percentiles (use successful requests; if none, use all non-error rows)
     latency_source = success_df['latency_ms']
@@ -164,6 +165,8 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
         'num_dropped_requests': dropped_count,
         'errors': errors,
         'num_errors': error_count,
+        'throughput': success,
+        'num_throughput': success_count,
         'p50_latency': p50,
         'p95_latency': p95,
         'p99_latency': p99,
@@ -278,6 +281,7 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
         'slo_violations',
         'dropped_requests',
         'errors',
+        'throughput_rate',
         'p50_latency',
         'p95_latency',
         'p99_latency',
@@ -332,6 +336,7 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
                 slo_violations = slo_violations_count / interval_seconds
                 dropped_requests = dropped_count / interval_seconds
                 errors = error_count / interval_seconds
+                success = success_count / interval_seconds
 
             # latency percentiles
             if len(success_df) > 0:
@@ -353,6 +358,7 @@ def realtime_report(df: pd.DataFrame, output_path: str, freq: int, warmup: int =
                 'slo_violations': slo_violations,
                 'dropped_requests': dropped_requests,
                 'errors': errors,
+                'throughput_rate': success,
                 'p50_latency': p50,
                 'p95_latency': p95,
                 'p99_latency': p99,
