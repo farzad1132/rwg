@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"runtime"
@@ -108,6 +109,7 @@ type TransportInterface interface {
 type HTTP11Transport struct {
 	Url        string
 	httpClient *http.Client
+	bufPool    *sync.Pool
 }
 
 func (t *HTTP11Transport) Issue(sample *Sample) {
@@ -120,9 +122,17 @@ func (t *HTTP11Transport) Issue(sample *Sample) {
 		}
 		return
 	}
+	// Get buffer from pool
+	bufPtr := t.bufPool.Get().(*[]byte)
+	buf := *bufPtr
+
 	// Drain and close the body so Transport can reuse the connection
-	_, _ = io.Copy(io.Discard, resp.Body)
+	_, _ = io.CopyBuffer(io.Discard, resp.Body, buf)
 	_ = resp.Body.Close()
+
+	// Return buffer to pool
+	t.bufPool.Put(bufPtr)
+
 	sample.StatusCode = resp.StatusCode
 	sample.ErrStr = ""
 }
@@ -133,12 +143,24 @@ func (t *HTTP11Transport) GetUrl() string {
 
 func NewHTTP11Transport(url string) *HTTP11Transport {
 	tr := &http.Transport{
-		IdleConnTimeout: 60 * time.Minute,
+		IdleConnTimeout:     60 * time.Minute,
+		MaxIdleConns:        args.Workers,
+		MaxIdleConnsPerHost: args.Workers,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
 	}
 	client := &http.Client{Transport: tr, Timeout: time.Duration(args.Timeout) * time.Second}
 	return &HTTP11Transport{
 		Url:        url,
 		httpClient: client,
+		bufPool: &sync.Pool{
+			New: func() interface{} {
+				s := make([]byte, 32*1024)
+				return &s
+			},
+		},
 	}
 }
 
@@ -212,7 +234,8 @@ func (w *Worker) Start() {
 
 type Collector struct {
 	reportCh          chan Sample
-	Samples           []Sample
+	latencies         []int64
+	statusCodeCounts  map[int]int
 	SkippedIterations int
 	NumErrors         int
 	NumTimeouts       int
@@ -220,63 +243,130 @@ type Collector struct {
 
 func NewCollector(reportCh chan Sample, size int) *Collector {
 	return &Collector{
-		reportCh: reportCh,
-		Samples:  make([]Sample, 0, size),
+		reportCh:         reportCh,
+		latencies:        make([]int64, 0, size),
+		statusCodeCounts: make(map[int]int),
 	}
 }
 
 func (c *Collector) Start() {
-	for sample := range c.reportCh {
-		c.Samples = append(c.Samples, sample)
-	}
-	if args.PrintStats {
-		c.PrintStats()
-	}
-	if args.Output != "" {
-		f, err := os.OpenFile(args.Output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-		if err != nil {
-			panic(err)
-		}
-		defer f.Close()
+	// Setup async writer if output is requested
+	var writeCh chan *[]Sample
+	var writerWg sync.WaitGroup
+	var batchPool *sync.Pool
 
-		w := bufio.NewWriter(f)
-		_, err = w.WriteString("url,latency,status_code,error,timestamp\n")
-		if err != nil {
-			panic(err)
+	const BatchSize = 1000
+
+	if args.Output != "" {
+		writeCh = make(chan *[]Sample, 100) // Buffer for 100 batches
+		batchPool = &sync.Pool{
+			New: func() interface{} {
+				s := make([]Sample, 0, BatchSize)
+				return &s
+			},
 		}
-		for _, sample := range c.Samples {
-			// url
-			if _, err = w.WriteString(sample.Url); err != nil {
+
+		writerWg.Add(1)
+		go func() {
+			defer writerWg.Done()
+			f, err := os.OpenFile(args.Output, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+			if err != nil {
 				panic(err)
 			}
-			_ = w.WriteByte(',')
-			// latency
-			if _, err = w.WriteString(strconv.FormatInt(sample.Latency, 10)); err != nil {
+			defer f.Close()
+
+			w := bufio.NewWriter(f)
+			_, err = w.WriteString("url,latency,status_code,error,timestamp\n")
+			if err != nil {
 				panic(err)
 			}
-			_ = w.WriteByte(',')
-			// status code
-			if _, err = w.WriteString(strconv.Itoa(sample.StatusCode)); err != nil {
-				panic(err)
+			defer func() {
+				if err := w.Flush(); err != nil {
+					panic(err)
+				}
+				fmt.Println("Exported results to ", args.Output)
+			}()
+
+			for batchPtr := range writeCh {
+				batch := *batchPtr
+				for _, sample := range batch {
+					// url
+					if _, err := w.WriteString(sample.Url); err != nil {
+						panic(err)
+					}
+					_ = w.WriteByte(',')
+					// latency
+					if _, err := w.WriteString(strconv.FormatInt(sample.Latency, 10)); err != nil {
+						panic(err)
+					}
+					_ = w.WriteByte(',')
+					// status code
+					if _, err := w.WriteString(strconv.Itoa(sample.StatusCode)); err != nil {
+						panic(err)
+					}
+					_ = w.WriteByte(',')
+					// error
+					if _, err := w.WriteString(sample.ErrStr); err != nil {
+						panic(err)
+					}
+					_ = w.WriteByte(',')
+					// timestamp (RFC3339Nano)
+					if _, err := w.WriteString(sample.Timestamp.Format(time.RFC3339Nano)); err != nil {
+						panic(err)
+					}
+					_ = w.WriteByte('\n')
+				}
+				// Reset and reuse
+				*batchPtr = batch[:0]
+				batchPool.Put(batchPtr)
 			}
-			_ = w.WriteByte(',')
-			// error
-			if _, err = w.WriteString(sample.ErrStr); err != nil {
-				panic(err)
-			}
-			_ = w.WriteByte(',')
-			// timestamp (RFC3339Nano)
-			if _, err = w.WriteString(sample.Timestamp.Format(time.RFC3339Nano)); err != nil {
-				panic(err)
-			}
-			_ = w.WriteByte('\n')
-		}
-		if err := w.Flush(); err != nil {
-			panic(err)
-		}
-		fmt.Println("Exported results to ", args.Output)
+		}()
 	} else {
 		fmt.Println("No output file specified, not writing results")
+	}
+
+	// Main collection loop
+	var currentBatchPtr *[]Sample
+	if batchPool != nil {
+		currentBatchPtr = batchPool.Get().(*[]Sample)
+	}
+
+	for sample := range c.reportCh {
+		// Update stats
+		c.latencies = append(c.latencies, sample.Latency)
+		if sample.ErrStr != "" {
+			c.NumErrors++
+			if sample.IsTimeout {
+				c.NumTimeouts++
+			}
+		} else {
+			c.statusCodeCounts[sample.StatusCode]++
+		}
+
+		// Handle batching
+		if batchPool != nil {
+			*currentBatchPtr = append(*currentBatchPtr, sample)
+			if len(*currentBatchPtr) >= BatchSize {
+				writeCh <- currentBatchPtr
+				currentBatchPtr = batchPool.Get().(*[]Sample)
+			}
+		}
+	}
+
+	// Flush remaining
+	if batchPool != nil {
+		if len(*currentBatchPtr) > 0 {
+			writeCh <- currentBatchPtr
+		} else {
+			// Not used
+			batchPool.Put(currentBatchPtr)
+		}
+		close(writeCh)
+		writerWg.Wait()
+	}
+
+	if args.PrintStats {
+		c.PrintStats()
 	}
 }
 
@@ -297,40 +387,30 @@ func (c *Collector) PrintStats() {
 		}
 		totalDuration += duration
 	}
-	// number of errors and number of requests with different status codes
-	statusCodeCounts := make(map[int]int)
-	c.NumErrors = 0
-	c.NumTimeouts = 0
-	for _, sample := range c.Samples {
-		if sample.ErrStr != "" {
-			c.NumErrors++
-			if sample.IsTimeout {
-				c.NumTimeouts++
-			}
-		} else {
-			statusCodeCounts[sample.StatusCode]++
-		}
-	}
+
 	// number of skipped iterations (in red color)
 	fmt.Printf("\033[31m| %-25s | %-12d | %-13.1f |\033[0m\n", "Skipped iterations", c.SkippedIterations, float64(c.SkippedIterations)/float64(totalDuration))
 	// print number of requests with different status codes
-	for statusCode, count := range statusCodeCounts {
+	for statusCode, count := range c.statusCodeCounts {
 		fmt.Printf("| %-25s | %-12d | %-13.1f |\n", "status code: "+strconv.Itoa(statusCode), count, float64(count)/float64(totalDuration))
 	}
 	// rate of successfull requests
-	rateSuccess := float64(len(c.Samples)-c.NumErrors) / float64(totalDuration)
+	rateSuccess := float64(len(c.latencies)-c.NumErrors) / float64(totalDuration)
 	// p50 and p95 latency
-	sort.Slice(c.Samples, func(i, j int) bool {
-		return c.Samples[i].Latency < c.Samples[j].Latency
+	sort.Slice(c.latencies, func(i, j int) bool {
+		return c.latencies[i] < c.latencies[j]
 	})
-	p50Latency := c.Samples[len(c.Samples)/2].Latency
-	p95Latency := c.Samples[len(c.Samples)*95/100].Latency
-	p99Latency := c.Samples[len(c.Samples)*99/100].Latency
-	p999Latency := c.Samples[len(c.Samples)*999/1000].Latency
-	minLatency := c.Samples[0].Latency
-	maxLatency := c.Samples[len(c.Samples)-1].Latency
-	// total requests
-	totalRequests := len(c.Samples)
+	totalRequests := len(c.latencies)
+	var p50Latency, p95Latency, p99Latency, p999Latency, minLatency, maxLatency int64
+	if totalRequests > 0 {
+		p50Latency = c.latencies[totalRequests/2]
+		p95Latency = c.latencies[totalRequests*95/100]
+		p99Latency = c.latencies[totalRequests*99/100]
+		p999Latency = c.latencies[totalRequests*999/1000]
+		minLatency = c.latencies[0]
+		maxLatency = c.latencies[totalRequests-1]
+	}
+
 	// print stats in table format
 	fmt.Println("+---------------------------+---------------------------+")
 	fmt.Printf("\033[1;31m| %-25s | %-25v |\033[0m\n", "Number of errors", c.NumErrors)
@@ -388,7 +468,7 @@ type SpinWait struct {
 }
 
 func (sw *SpinWait) Wait(phaseWait float64) {
-	sw.deadline = time.Now().Add(time.Duration(phaseWait*0.96) * time.Microsecond)
+	sw.deadline = time.Now().Add(time.Duration(phaseWait) * time.Microsecond)
 	for time.Now().Before(sw.deadline) {
 	}
 }
@@ -583,10 +663,16 @@ func Run() {
 	index := 0
 	workersWg := sync.WaitGroup{}
 	var transport TransportInterface
+
+	// For HTTP, create a single shared transport instance
+	if version == 1 {
+		transport = CreateTransport()
+	}
+
 	for i := 0; i < args.Workers; i++ {
 		switch version {
 		case 1:
-			transport = CreateTransport()
+			// transport is already created and shared
 		case 2:
 			if index%MaxConcurrency == 0 {
 				transport = CreateTransport()
