@@ -5,26 +5,20 @@ package cmd
 
 import (
 	"bufio"
-	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"math/rand"
 	"net"
 	"net/http"
 	"os"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/farzad1132/rwg/protobuf"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
 )
 
 var args struct {
@@ -102,7 +96,7 @@ type Sample struct {
 }
 
 type TransportInterface interface {
-	Issue(*Sample)
+	Issue(*Sample) (int64, time.Time)
 	GetUrl() string
 }
 
@@ -112,15 +106,17 @@ type HTTP11Transport struct {
 	bufPool    *sync.Pool
 }
 
-func (t *HTTP11Transport) Issue(sample *Sample) {
+func (t *HTTP11Transport) Issue(sample *Sample) (int64, time.Time) {
+	start := time.Now()
 	resp, err := t.httpClient.Get(t.Url)
+	duration := time.Since(start).Microseconds()
 	if err != nil {
 		sample.StatusCode = 0
 		sample.ErrStr = err.Error()
 		if os.IsTimeout(err) {
 			sample.IsTimeout = true
 		}
-		return
+		return duration, start
 	}
 	// Get buffer from pool
 	bufPtr := t.bufPool.Get().(*[]byte)
@@ -135,6 +131,7 @@ func (t *HTTP11Transport) Issue(sample *Sample) {
 
 	sample.StatusCode = resp.StatusCode
 	sample.ErrStr = ""
+	return duration, start
 }
 
 func (t *HTTP11Transport) GetUrl() string {
@@ -144,8 +141,12 @@ func (t *HTTP11Transport) GetUrl() string {
 func NewHTTP11Transport(url string) *HTTP11Transport {
 	tr := &http.Transport{
 		IdleConnTimeout:     60 * time.Minute,
-		MaxIdleConns:        args.Workers,
-		MaxIdleConnsPerHost: args.Workers,
+		MaxIdleConns:        10000,
+		MaxIdleConnsPerHost: 10000,
+		DisableKeepAlives:   false,
+		ForceAttemptHTTP2:   false,
+		TLSNextProto:        make(map[string]func(string, *tls.Conn) http.RoundTripper),
+		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -164,7 +165,7 @@ func NewHTTP11Transport(url string) *HTTP11Transport {
 	}
 }
 
-type GRPCTransport struct {
+/* type GRPCTransport struct {
 	call func() error
 	Url  string
 }
@@ -196,15 +197,13 @@ func NewGRPCTransport(call func() error, url string) *GRPCTransport {
 		call: call,
 		Url:  url,
 	}
-}
+} */
 
 type Worker struct {
 	transport TransportInterface
 	ch        chan bool
 	reportCh  chan Sample
 }
-
-const MaxConcurrency = 100
 
 func NewWorker(ch chan bool, reportCh chan Sample, transport TransportInterface) *Worker {
 	return &Worker{
@@ -217,16 +216,16 @@ func NewWorker(ch chan bool, reportCh chan Sample, transport TransportInterface)
 func (w *Worker) Start() {
 	var sample Sample
 	sample.Url = w.transport.GetUrl()
+	var duration int64
 	var start time.Time
 
 	for ok := range w.ch {
 		if !ok {
 			return
 		}
-		start = time.Now()
 		sample.IsTimeout = false
-		w.transport.Issue(&sample)
-		sample.Latency = time.Since(start).Microseconds()
+		duration, start = w.transport.Issue(&sample)
+		sample.Latency = duration
 		sample.Timestamp = start
 		w.reportCh <- sample
 	}
@@ -234,7 +233,7 @@ func (w *Worker) Start() {
 
 type Collector struct {
 	reportCh          chan Sample
-	latencies         []int64
+	Latencies         []int64
 	statusCodeCounts  map[int]int
 	SkippedIterations int
 	NumErrors         int
@@ -242,11 +241,19 @@ type Collector struct {
 }
 
 func NewCollector(reportCh chan Sample, size int) *Collector {
-	return &Collector{
+	c := &Collector{
 		reportCh:         reportCh,
-		latencies:        make([]int64, 0, size),
+		Latencies:        make([]int64, 0, size),
 		statusCodeCounts: make(map[int]int),
 	}
+	for i := range c.Latencies {
+		c.Latencies[i] = -1
+	}
+	return c
+}
+
+func (c *Collector) RequestFinished() int64 {
+	return int64(len(c.Latencies))
 }
 
 func (c *Collector) Start() {
@@ -255,7 +262,7 @@ func (c *Collector) Start() {
 	var writerWg sync.WaitGroup
 	var batchPool *sync.Pool
 
-	const BatchSize = 1000
+	const BatchSize = 3000
 
 	if args.Output != "" {
 		writeCh = make(chan *[]Sample, 100) // Buffer for 100 batches
@@ -333,7 +340,7 @@ func (c *Collector) Start() {
 
 	for sample := range c.reportCh {
 		// Update stats
-		c.latencies = append(c.latencies, sample.Latency)
+		c.Latencies = append(c.Latencies, sample.Latency)
 		if sample.ErrStr != "" {
 			c.NumErrors++
 			if sample.IsTimeout {
@@ -395,20 +402,20 @@ func (c *Collector) PrintStats() {
 		fmt.Printf("| %-25s | %-12d | %-13.1f |\n", "status code: "+strconv.Itoa(statusCode), count, float64(count)/float64(totalDuration))
 	}
 	// rate of successfull requests
-	rateSuccess := float64(len(c.latencies)-c.NumErrors) / float64(totalDuration)
+	rateSuccess := float64(len(c.Latencies)-c.NumErrors) / float64(totalDuration)
 	// p50 and p95 latency
-	sort.Slice(c.latencies, func(i, j int) bool {
-		return c.latencies[i] < c.latencies[j]
+	sort.Slice(c.Latencies, func(i, j int) bool {
+		return c.Latencies[i] < c.Latencies[j]
 	})
-	totalRequests := len(c.latencies)
+	totalRequests := len(c.Latencies)
 	var p50Latency, p95Latency, p99Latency, p999Latency, minLatency, maxLatency int64
 	if totalRequests > 0 {
-		p50Latency = c.latencies[totalRequests/2]
-		p95Latency = c.latencies[totalRequests*95/100]
-		p99Latency = c.latencies[totalRequests*99/100]
-		p999Latency = c.latencies[totalRequests*999/1000]
-		minLatency = c.latencies[0]
-		maxLatency = c.latencies[totalRequests-1]
+		p50Latency = c.Latencies[totalRequests/2]
+		p95Latency = c.Latencies[totalRequests*95/100]
+		p99Latency = c.Latencies[totalRequests*99/100]
+		p999Latency = c.Latencies[totalRequests*999/1000]
+		minLatency = c.Latencies[0]
+		maxLatency = c.Latencies[totalRequests-1]
 	}
 
 	// print stats in table format
@@ -427,42 +434,6 @@ func (c *Collector) PrintStats() {
 	fmt.Println("+---------------------------+---------------------------+")
 }
 
-// preciseSleep sleeps until the provided deadline using a hybrid strategy:
-// - For large remaining durations it uses time.Sleep to reduce CPU usage.
-// - For short remaining durations it yields or busy-spins to reduce wake-up jitter.
-// This achieves much lower jitter at microsecond scale while keeping CPU use reasonable.
-func preciseSleep(deadline time.Time) {
-	// thresholds tuned empirically: adjust for your platform.
-	const yieldThreshold = 2 * time.Millisecond  // switch from sleep->yield
-	const spinThreshold = 300 * time.Microsecond // busy-spin window
-
-	for {
-		now := time.Now()
-		if !now.Before(deadline) {
-			return
-		}
-		remaining := deadline.Sub(now)
-		if remaining > yieldThreshold {
-			// Sleep most of the remaining time, leave a margin for yield/spin
-			time.Sleep(remaining - yieldThreshold)
-			continue
-		}
-
-		// Now we're in the short-window region. Yield to other goroutines while
-		// there's still some time, but if it's very small, busy-spin.
-		if remaining > spinThreshold {
-			// Yield the processor to allow other goroutines to run while we wait
-			runtime.Gosched()
-			continue
-		}
-
-		// Very small remaining time -> busy spin for lowest jitter.
-		for time.Now().Before(deadline) {
-		}
-		return
-	}
-}
-
 type SpinWait struct {
 	deadline time.Time
 }
@@ -474,33 +445,85 @@ func (sw *SpinWait) Wait(phaseWait float64) {
 }
 
 type WaitCalculator interface {
+	GetTotalRequests() int64
 	GetWaitTime() float64
-	UpdatePhaseRate(rate int)
 }
 
 type FixedWait struct {
-	phaseWait float64
+	WaitPeriods []float64
+	Index       int64
+	Total       int64
+}
+
+func NewFixedWait(rates, durations []int) *FixedWait {
+	var phaseCount int64
+	waiter := &FixedWait{Index: -1, Total: 0}
+	waiter.WaitPeriods = make([]float64, 0)
+	for i := 0; i < len(rates); i++ {
+		phaseCount = int64(rates[i] * durations[i])
+		waiter.Total += phaseCount
+		for range phaseCount {
+			waiter.WaitPeriods = append(waiter.WaitPeriods, float64(1000000/rates[i]))
+		}
+	}
+	return waiter
+}
+
+func (fw *FixedWait) GetTotalRequests() int64 {
+	return fw.Total
 }
 
 func (fw *FixedWait) GetWaitTime() float64 {
-	return fw.phaseWait
-}
-
-func (fw *FixedWait) UpdatePhaseRate(rate int) {
-	fw.phaseWait = float64(1000000 / rate)
+	fw.Index += 1
+	if fw.Index == fw.Total {
+		return -1
+	}
+	return fw.WaitPeriods[fw.Index]
 }
 
 type ExponentialWait struct {
-	rate float64
+	WaitPeriods []float64
+	Index       int64
+	Total       int64
+}
+
+func NewExpWait(rates, durations []int) *ExponentialWait {
+	waiter := &ExponentialWait{
+		Index:       0,
+		Total:       0,
+		WaitPeriods: make([]float64, 0),
+	}
+	total := 0
+	for i := 0; i < len(rates); i++ {
+		localDuration := float64(0)
+		var val float64
+		for localDuration < float64(durations[i]*1000000) {
+			val = waiter.GenExpVariable(float64(rates[i]))
+			waiter.WaitPeriods = append(waiter.WaitPeriods, val)
+			localDuration += val
+			total += 1
+		}
+	}
+
+	waiter.Total = int64(total)
+	return waiter
+}
+
+func (ew *ExponentialWait) GenExpVariable(rate float64) float64 {
+	// generate a exponential random number with mean 1/rate
+	return rand.ExpFloat64() / rate * 1000000
 }
 
 func (ew *ExponentialWait) GetWaitTime() float64 {
-	// generate a exponential random number with mean 1/rate
-	return rand.ExpFloat64() / ew.rate * 1000000
+	ew.Index += 1
+	if ew.Index == ew.Total {
+		return -1
+	}
+	return ew.WaitPeriods[ew.Index]
 }
 
-func (ew *ExponentialWait) UpdatePhaseRate(rate int) {
-	ew.rate = float64(rate)
+func (ew *ExponentialWait) GetTotalRequests() int64 {
+	return ew.Total
 }
 
 func CheckArgsPresent(required ...string) {
@@ -512,7 +535,7 @@ func CheckArgsPresent(required ...string) {
 }
 
 // Url is in the format of package.service/method
-func CreateGRPCTransport(url string, Args map[string]string) TransportInterface {
+/* func CreateGRPCTransport(url string, Args map[string]string) TransportInterface {
 	conn, err := grpc.NewClient(url, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		panic(err)
@@ -596,15 +619,17 @@ func CreateGRPCTransport(url string, Args map[string]string) TransportInterface 
 		panic("Unknown service: " + service)
 	}
 
-}
+} */
 
 func CreateTransport() TransportInterface {
 	// Currently we only support HTTP/1.1 transports. In future we can
 	// inspect the scheme and return a gRPC transport when needed.
 	if strings.HasPrefix(args.Url, "http://") || strings.HasPrefix(args.Url, "https://") {
 		return NewHTTP11Transport(args.Url)
+	} else {
+		panic("gRPC not supported yet")
 	}
-	return CreateGRPCTransport(args.Url, args.Args)
+	//return CreateGRPCTransport(args.Url, args.Args)
 }
 
 func VersionFinder() int {
@@ -651,16 +676,13 @@ func Run() {
 	durations = append(durations, 1) */
 
 	// Initializations
-	numSamples := 0
-	for i := 0; i < len(rates); i++ {
-		numSamples += rates[i] * durations[i]
-	}
-	numSamples += 10000 // Padding
-	workers := make([]*Worker, args.Workers)
+	MaxWorkers := args.Workers
+	CurrentWorkers := 50
+	workers := make([]*Worker, 0, MaxWorkers)
 	ch := make(chan bool)
-	reportCh := make(chan Sample, args.Workers*50)
+	reportCh := make(chan Sample, 10000)
 	version := VersionFinder()
-	index := 0
+	//index := 0
 	workersWg := sync.WaitGroup{}
 	var transport TransportInterface
 
@@ -668,25 +690,38 @@ func Run() {
 	if version == 1 {
 		transport = CreateTransport()
 	}
-
-	for i := 0; i < args.Workers; i++ {
-		switch version {
-		case 1:
-			// transport is already created and shared
-		case 2:
-			if index%MaxConcurrency == 0 {
-				transport = CreateTransport()
-			}
-			index++
-		}
-		workers[i] = NewWorker(ch, reportCh, transport)
+	for i := 0; i < CurrentWorkers; i++ {
+		workers = append(workers, NewWorker(ch, reportCh, transport))
 		workersWg.Add(1)
 		go func() {
 			defer workersWg.Done()
 			workers[i].Start()
 		}()
 	}
-	collector := NewCollector(reportCh, numSamples)
+	scaleFunc := func() bool {
+		for i := CurrentWorkers; i < CurrentWorkers+CurrentWorkers; i++ {
+			if i+1 >= MaxWorkers {
+				CurrentWorkers = i + 1
+				return true
+			}
+			workers = append(workers, NewWorker(ch, reportCh, transport))
+			workersWg.Add(1)
+			go func() {
+				defer workersWg.Done()
+				workers[i].Start()
+			}()
+		}
+		CurrentWorkers *= 2
+		return false
+	}
+	scaleInProgress := false
+	var cal WaitCalculator
+	if args.Dist == "fixed" {
+		cal = NewFixedWait(rates, durations)
+	} else {
+		cal = NewExpWait(rates, durations)
+	}
+	collector := NewCollector(reportCh, int(cal.GetTotalRequests()))
 	collectorWg := sync.WaitGroup{}
 	collectorWg.Add(1)
 	go func() {
@@ -694,14 +729,6 @@ func Run() {
 		collector.Start()
 	}()
 	time.Sleep(10 * time.Millisecond) // Wait for workers and collector to start
-	var cal WaitCalculator
-	if args.Dist == "fixed" {
-		cal = &FixedWait{}
-	} else {
-		cal = &ExponentialWait{}
-	}
-	phaseIndex := 0
-	cal.UpdatePhaseRate(rates[phaseIndex])
 	spinWait := &SpinWait{}
 	// print phases with rate and duration
 	for i := 0; i < len(rates); i++ {
@@ -710,31 +737,46 @@ func Run() {
 
 	// Main loop
 	fmt.Println("Starting the test")
-	timer := time.NewTimer(time.Duration(durations[phaseIndex]) * time.Second)
+	var waitTime float64
+	var requestStarted int64
+	var workerInUse int64
+	maxWorkerInUse := int64(0)
 	for {
 		select {
-		case <-timer.C:
-			phaseIndex++
-			if phaseIndex >= len(rates) {
-				fmt.Println("All phases completed")
-				close(ch)
-				workersWg.Wait()
-				close(reportCh)
-				collectorWg.Wait()
-				if collector.SkippedIterations > 0 || collector.NumErrors > 0 {
-					os.Exit(1)
-				}
-				os.Exit(0)
-			}
-			timer.Reset(time.Duration(durations[phaseIndex]) * time.Second)
-			cal.UpdatePhaseRate(rates[phaseIndex])
 		case ch <- true:
+			requestStarted++
 		default:
 			collector.SkippedIterations++
 		}
+		workerInUse = requestStarted - collector.RequestFinished()
+		if workerInUse > maxWorkerInUse {
+			maxWorkerInUse = workerInUse
+		}
+		if float64(workerInUse) > 0.7*float64(CurrentWorkers) {
+			if !scaleInProgress {
+				scaleInProgress = true
+				go func() {
+					scaleInProgress = scaleFunc()
+				}()
+			}
 
-		spinWait.Wait(cal.GetWaitTime())
-
+		}
+		waitTime = cal.GetWaitTime()
+		if waitTime < 0 {
+			fmt.Println("All phases completed")
+			close(ch)
+			workersWg.Wait()
+			close(reportCh)
+			collectorWg.Wait()
+			if collector.SkippedIterations > 0 || collector.NumErrors > 0 {
+				fmt.Printf("Max Worker Used: %d, Worker Pool Size: %d\n", maxWorkerInUse, CurrentWorkers)
+				os.Exit(1)
+			}
+			fmt.Printf("Max Worker Used: %d, Worker Pool Size: %d\n", maxWorkerInUse, CurrentWorkers)
+			os.Exit(0)
+		} else {
+			spinWait.Wait(waitTime)
+		}
 	}
 
 }
