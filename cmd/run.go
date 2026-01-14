@@ -30,10 +30,11 @@ var args struct {
 	Output    string `arg:"-o,--output" help:"Output file to write results to (CSV format)" default:"out.csv"`
 	// Args allows passing arbitrary key=value pairs from the command line.
 	// Use with --args key=value (can be repeated) or --args key1=val1,key2=val2
-	Proto      string
-	Args       map[string]string
-	PrintStats bool
-	Timeout    int
+	Proto        string
+	Args         map[string]string
+	PrintStats   bool
+	Timeout      int
+	IgnoreErrors bool
 }
 
 // runCmd represents the run command
@@ -57,6 +58,7 @@ func init() {
 	runCmd.Flags().StringVarP(&args.Proto, "proto", "p", "", "Protocol to use (http or grpc)")
 	runCmd.Flags().BoolVarP(&args.PrintStats, "stats", "s", true, "Print stats at the end of the test")
 	runCmd.Flags().IntVarP(&args.Timeout, "timeout", "t", 5, "Request timeout in seconds")
+	runCmd.Flags().BoolVar(&args.IgnoreErrors, "ignore-errors", false, "Do not stop execution on error")
 
 	if err := runCmd.MarkFlagRequired("url"); err != nil {
 		panic(err)
@@ -130,7 +132,11 @@ func (t *HTTP11Transport) Issue(sample *Sample) (int64, time.Time) {
 	t.bufPool.Put(bufPtr)
 
 	sample.StatusCode = resp.StatusCode
-	sample.ErrStr = ""
+	if resp.StatusCode != 200 && resp.StatusCode != 503 {
+		sample.ErrStr = resp.Status
+	} else {
+		sample.ErrStr = ""
+	}
 	return duration, start
 }
 
@@ -345,6 +351,11 @@ func (c *Collector) Start() {
 			c.NumErrors++
 			if sample.IsTimeout {
 				c.NumTimeouts++
+			}
+			if !args.IgnoreErrors {
+				fmt.Printf("Stopping execution due to error: %s\n", sample.ErrStr)
+				c.PrintStats()
+				os.Exit(1)
 			}
 		} else {
 			c.statusCodeCounts[sample.StatusCode]++
