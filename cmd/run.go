@@ -12,10 +12,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -244,6 +246,7 @@ type Collector struct {
 	SkippedIterations int
 	NumErrors         int
 	NumTimeouts       int
+	StartTime         time.Time
 }
 
 func NewCollector(reportCh chan Sample, size int) *Collector {
@@ -251,6 +254,7 @@ func NewCollector(reportCh chan Sample, size int) *Collector {
 		reportCh:         reportCh,
 		Latencies:        make([]int64, 0, size),
 		statusCodeCounts: make(map[int]int),
+		StartTime:        time.Now(),
 	}
 	for i := range c.Latencies {
 		c.Latencies[i] = -1
@@ -261,7 +265,6 @@ func NewCollector(reportCh chan Sample, size int) *Collector {
 func (c *Collector) RequestFinished() int64 {
 	return int64(len(c.Latencies))
 }
-
 func (c *Collector) Start() {
 	// Setup async writer if output is requested
 	var writeCh chan *[]Sample
@@ -406,14 +409,25 @@ func (c *Collector) PrintStats() {
 		totalDuration += duration
 	}
 
+	calcDuration := float64(totalDuration)
+	if !c.StartTime.IsZero() {
+		elapsed := time.Since(c.StartTime).Seconds()
+		if elapsed < calcDuration {
+			calcDuration = elapsed
+		}
+	}
+	if calcDuration == 0 {
+		calcDuration = 1.0
+	}
+
 	// number of skipped iterations (in red color)
-	fmt.Printf("\033[31m| %-25s | %-12d | %-13.1f |\033[0m\n", "Skipped iterations", c.SkippedIterations, float64(c.SkippedIterations)/float64(totalDuration))
+	fmt.Printf("\033[31m| %-25s | %-12d | %-13.1f |\033[0m\n", "Skipped iterations", c.SkippedIterations, float64(c.SkippedIterations)/calcDuration)
 	// print number of requests with different status codes
 	for statusCode, count := range c.statusCodeCounts {
-		fmt.Printf("| %-25s | %-12d | %-13.1f |\n", "status code: "+strconv.Itoa(statusCode), count, float64(count)/float64(totalDuration))
+		fmt.Printf("| %-25s | %-12d | %-13.1f |\n", "status code: "+strconv.Itoa(statusCode), count, float64(count)/calcDuration)
 	}
 	// rate of successfull requests
-	rateSuccess := float64(len(c.Latencies)-c.NumErrors) / float64(totalDuration)
+	rateSuccess := float64(len(c.Latencies)-c.NumErrors) / calcDuration
 	// p50 and p95 latency
 	sort.Slice(c.Latencies, func(i, j int) bool {
 		return c.Latencies[i] < c.Latencies[j]
@@ -441,7 +455,7 @@ func (c *Collector) PrintStats() {
 	fmt.Printf("\033[1m| %-25s | %-25d |\033[0m\n", "P99.9 latency", p999Latency)
 	fmt.Printf("| %-25s | %-25d |\n", "Max latency", maxLatency)
 	fmt.Printf("| %-25s | %-25d |\n", "Total requests", totalRequests)
-	fmt.Printf("| %-25s | %-25d |\n", "Duration of test", totalDuration)
+	fmt.Printf("| %-25s | %-25.2f |\n", "Duration of test", calcDuration)
 	fmt.Println("+---------------------------+---------------------------+")
 }
 
@@ -748,12 +762,19 @@ func Run() {
 
 	// Main loop
 	fmt.Println("Starting the test")
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
 	var waitTime float64
 	var requestStarted int64
 	var workerInUse int64
 	maxWorkerInUse := int64(0)
 	for {
 		select {
+		case <-sigChan:
+			fmt.Println("\nInterrupted execution")
+			goto Finish
 		case ch <- true:
 			requestStarted++
 		default:
@@ -775,19 +796,22 @@ func Run() {
 		waitTime = cal.GetWaitTime()
 		if waitTime < 0 {
 			fmt.Println("All phases completed")
-			close(ch)
-			workersWg.Wait()
-			close(reportCh)
-			collectorWg.Wait()
-			if collector.SkippedIterations > 0 || collector.NumErrors > 0 {
-				fmt.Printf("Max Worker Used: %d, Worker Pool Size: %d\n", maxWorkerInUse, CurrentWorkers)
-				os.Exit(1)
-			}
-			fmt.Printf("Max Worker Used: %d, Worker Pool Size: %d\n", maxWorkerInUse, CurrentWorkers)
-			os.Exit(0)
+			goto Finish
 		} else {
 			spinWait.Wait(waitTime)
 		}
 	}
+
+Finish:
+	close(ch)
+	workersWg.Wait()
+	close(reportCh)
+	collectorWg.Wait()
+	if collector.SkippedIterations > 0 || collector.NumErrors > 0 {
+		fmt.Printf("Max Worker Used: %d, Worker Pool Size: %d\n", maxWorkerInUse, CurrentWorkers)
+		os.Exit(1)
+	}
+	fmt.Printf("Max Worker Used: %d, Worker Pool Size: %d\n", maxWorkerInUse, CurrentWorkers)
+	os.Exit(0)
 
 }
