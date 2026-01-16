@@ -2,3 +2,4 @@
 rwg
 *.json
 /venv
+.venv
