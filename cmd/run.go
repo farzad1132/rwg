@@ -807,11 +807,10 @@ Finish:
 	workersWg.Wait()
 	close(reportCh)
 	collectorWg.Wait()
-	if collector.SkippedIterations > 0 || collector.NumErrors > 0 {
-		fmt.Printf("Max Worker Used: %d, Worker Pool Size: %d\n", maxWorkerInUse, CurrentWorkers)
+	fmt.Printf("Max Worker Used: %d, Worker Pool Size: %d\n", maxWorkerInUse, CurrentWorkers)
+	if collector.NumErrors > 0 {
 		os.Exit(1)
 	}
-	fmt.Printf("Max Worker Used: %d, Worker Pool Size: %d\n", maxWorkerInUse, CurrentWorkers)
 	os.Exit(0)
 
 }
