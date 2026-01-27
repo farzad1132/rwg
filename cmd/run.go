@@ -240,6 +240,7 @@ func (w *Worker) Start() {
 }
 
 var CurrentWorkers int
+var maxWorkerInUse int64
 
 type Collector struct {
 	reportCh          chan Sample
@@ -334,7 +335,7 @@ func (c *Collector) Start() {
 					}
 					_ = w.WriteByte(',')
 					// current_workers
-					if _, err := w.WriteString(strconv.FormatInt(int64(CurrentWorkers), 10)); err != nil {
+					if _, err := w.WriteString(strconv.FormatInt(int64(maxWorkerInUse), 10)); err != nil {
 						panic(err)
 					}
 					_ = w.WriteByte('\n')
@@ -776,7 +777,7 @@ func Run() {
 	var waitTime float64
 	var requestStarted int64
 	var workerInUse int64
-	maxWorkerInUse := int64(0)
+	maxWorkerInUse = 0
 	for {
 		select {
 		case <-sigChan:
