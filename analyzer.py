@@ -51,7 +51,9 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
     - p50_latency: 50th percentile latency in milliseconds (successful requests)
     - p90_latency: 90th percentile latency in milliseconds (successful requests)
     - total_requests: number of requests in the filtered window
+    - total_requests: number of requests in the filtered window
     - duration_seconds: duration of the filtered window in seconds
+    - maximum_workers: maximum number of concurrent workers (if 'current_workers' column exists)
 
     Notes / assumptions:
     - The DataFrame must contain columns: 'latency', 'status_code', 'error', 'timestamp', 'url'.
@@ -178,6 +180,9 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
         'start_time': start.isoformat(),
         'end_time': end.isoformat(),
     }
+
+    if 'current_workers' in window_df.columns:
+        out_row['maximum_workers'] = int(window_df['current_workers'].max())
 
     print(f"Goodput: {goodput}")
 

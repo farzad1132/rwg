@@ -239,6 +239,8 @@ func (w *Worker) Start() {
 	}
 }
 
+var CurrentWorkers int
+
 type Collector struct {
 	reportCh          chan Sample
 	Latencies         []int64
@@ -292,7 +294,7 @@ func (c *Collector) Start() {
 			defer f.Close()
 
 			w := bufio.NewWriter(f)
-			_, err = w.WriteString("url,latency,status_code,error,timestamp\n")
+			_, err = w.WriteString("url,latency,status_code,error,timestamp,current_workers\n")
 			if err != nil {
 				panic(err)
 			}
@@ -328,6 +330,11 @@ func (c *Collector) Start() {
 					_ = w.WriteByte(',')
 					// timestamp (RFC3339Nano)
 					if _, err := w.WriteString(sample.Timestamp.Format(time.RFC3339Nano)); err != nil {
+						panic(err)
+					}
+					_ = w.WriteByte(',')
+					// current_workers
+					if _, err := w.WriteString(strconv.FormatInt(int64(CurrentWorkers), 10)); err != nil {
 						panic(err)
 					}
 					_ = w.WriteByte('\n')
@@ -702,7 +709,7 @@ func Run() {
 
 	// Initializations
 	MaxWorkers := args.Workers
-	CurrentWorkers := 50
+	CurrentWorkers = 50
 	workers := make([]*Worker, 0, MaxWorkers)
 	ch := make(chan bool)
 	reportCh := make(chan Sample, 10000)
