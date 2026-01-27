@@ -149,7 +149,10 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
     # latency percentiles (use successful requests; if none, use all non-error rows)
     latency_source = success_df['latency_ms']
     if latency_source.empty:
-        raise ValueError("No successful requests to compute latency percentiles")
+        p50 = 0.0
+        p95 = 0.0
+        p99 = 0.0
+        print("[Warning] No successful requests to compute latency percentiles. Defaulting to 0.0")
     else:
         p50 = float(latency_source.quantile(0.5))
         p95 = float(latency_source.quantile(0.95))
@@ -414,18 +417,12 @@ if __name__ == "__main__":
 
     # If overall_output path is provided, compute overall report and write it
     if args.overall_output:
-        try:
-            report = overall_report(df, args.overall_output, warmup=args.warmup, cooldown=args.cooldown)
-            print(f"Wrote overall report to {args.overall_output}")
-        except Exception as e:
-            print(f"Failed to create overall report: {e}")
+        report = overall_report(df, args.overall_output, warmup=args.warmup, cooldown=args.cooldown)
+        print(f"Wrote overall report to {args.overall_output}")
     
     if args.realtime_output and args.freq:
-        try:
-            success = realtime_report(df, args.realtime_output, freq=args.freq, warmup=args.warmup, cooldown=args.cooldown)
-            if success:
-                print(f"Wrote realtime report to {args.realtime_output}")
-        except Exception as e:
-            print(f"Failed to create realtime report: {e}")
+        success = realtime_report(df, args.realtime_output, freq=args.freq, warmup=args.warmup, cooldown=args.cooldown)
+        if success:
+            print(f"Wrote realtime report to {args.realtime_output}")
 
     
