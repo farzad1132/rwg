@@ -49,6 +49,7 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
     - dropped_requests: rate (requests/sec) of requests with dropped status code
     - errors: rate (requests/sec) of requests that resulted in an error
     - p50_latency: 50th percentile latency in milliseconds (successful requests)
+    - p75_latency: 75th percentile latency in milliseconds (successful requests)
     - p90_latency: 90th percentile latency in milliseconds (successful requests)
     - total_requests: number of requests in the filtered window
     - total_requests: number of requests in the filtered window
@@ -152,11 +153,13 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
     latency_source = success_df['latency_ms']
     if latency_source.empty:
         p50 = 0.0
+        p75 = 0.0
         p95 = 0.0
         p99 = 0.0
         print("[Warning] No successful requests to compute latency percentiles. Defaulting to 0.0")
     else:
         p50 = float(latency_source.quantile(0.5))
+        p75 = float(latency_source.quantile(0.75))
         p95 = float(latency_source.quantile(0.95))
         p99 = float(latency_source.quantile(0.99))
     # prepare output data
@@ -173,6 +176,7 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
         'throughput': success,
         'num_throughput': success_count,
         'p50_latency': p50,
+        'p75_latency': p75,
         'p95_latency': p95,
         'p99_latency': p99,
         'total_requests': total_requests,
