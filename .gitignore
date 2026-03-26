@@ -3,3 +3,4 @@ rwg
 *.json
 /venv
 .venv
+*.pyc
