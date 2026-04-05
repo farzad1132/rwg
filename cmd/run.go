@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -241,6 +242,7 @@ func (w *Worker) Start() {
 
 var CurrentWorkers int
 var maxWorkerInUse int64
+var requestEarlyFinish atomic.Bool
 
 type Collector struct {
 	reportCh          chan Sample
@@ -364,9 +366,10 @@ func (c *Collector) Start() {
 				c.NumTimeouts++
 			}
 			if !args.IgnoreErrors {
-				fmt.Printf("Stopping execution due to error: %s\n", sample.ErrStr)
-				c.PrintStats()
-				os.Exit(1)
+				if requestEarlyFinish.CompareAndSwap(false, true) {
+					fmt.Printf("Stopping execution due to error: %s\n", sample.ErrStr)
+					c.PrintStats()
+				}
 			}
 		} else {
 			c.statusCodeCounts[sample.StatusCode]++
@@ -394,7 +397,7 @@ func (c *Collector) Start() {
 		writerWg.Wait()
 	}
 
-	if args.PrintStats {
+	if args.PrintStats && !requestEarlyFinish.Load() {
 		c.PrintStats()
 	}
 }
@@ -778,7 +781,11 @@ func Run() {
 	var requestStarted int64
 	var workerInUse int64
 	maxWorkerInUse = 0
+	requestEarlyFinish.Store(false)
 	for {
+		if requestEarlyFinish.Load() {
+			goto Finish
+		}
 		select {
 		case <-sigChan:
 			fmt.Println("\nInterrupted execution")
