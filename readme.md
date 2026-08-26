@@ -1,17 +1,16 @@
 # RWG (Request Workload Generator)
 
-RWG is a high-performance HTTP/gRPC load generator designed for precise request scheduling and latency measurement. It runs on generator nodes, not in Kubernetes.
+RWG is a high-performance HTTP/1.1 load generator designed for precise request scheduling and latency measurement. It runs on generator nodes, not in Kubernetes.
 
 ## Repository layout
 
 ```text
 rwg/
 ├── main.go                    CLI entry (cobra)
-├── cmd/run.go                 HTTP/gRPC load generation
+├── cmd/run.go                 HTTP/1.1 load generation
 ├── cmd/parse.go               CSV → JSON via analyzer.py
 ├── analyzer.py                goodput, SLO, percentiles
-├── protobuf/                  gRPC stubs used by hotel/social-style APIs
-└── testserver/                local HTTP/gRPC test servers
+└── testserver/                local HTTP test server
 ```
 
 ## Recent Optimizations (High Performance Mode)
