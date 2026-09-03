@@ -51,6 +51,7 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
     - p50_latency: 50th percentile latency in milliseconds (successful requests)
     - p75_latency: 75th percentile latency in milliseconds (successful requests)
     - p90_latency: 90th percentile latency in milliseconds (successful requests)
+    - mean_latency: arithmetic mean latency in milliseconds (successful requests)
     - total_requests: number of requests in the filtered window
     - total_requests: number of requests in the filtered window
     - duration_seconds: duration of the filtered window in seconds
@@ -156,12 +157,14 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
         p75 = 0.0
         p95 = 0.0
         p99 = 0.0
+        mean_latency = 0.0
         print("[Warning] No successful requests to compute latency percentiles. Defaulting to 0.0")
     else:
         p50 = float(latency_source.quantile(0.5))
         p75 = float(latency_source.quantile(0.75))
         p95 = float(latency_source.quantile(0.95))
         p99 = float(latency_source.quantile(0.99))
+        mean_latency = float(latency_source.mean())
     # prepare output data
     out_row = {
         'goodput': goodput,
@@ -179,6 +182,7 @@ def overall_report(df: pd.DataFrame, output_path: str, warmup: int = 0, cooldown
         'p75_latency': p75,
         'p95_latency': p95,
         'p99_latency': p99,
+        'mean_latency': mean_latency,
         'total_requests': total_requests,
         'duration_seconds': duration_seconds,
         'start_time': start.isoformat(),
